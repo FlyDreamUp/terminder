@@ -1,0 +1,21 @@
+[package]
+name = "Terminder"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+alacritty_terminal = "0.25.1"
+crossbeam-channel = "0.5"
+dioxus = { version = "0.5", features = ["desktop"] }
+dirs = "6.0"
+keyboard-types = "0.7"
+portable-pty = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vt100 = "0.15"
+which = "8.0"
