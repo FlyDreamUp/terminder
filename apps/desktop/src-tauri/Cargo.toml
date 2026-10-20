@@ -1,0 +1,38 @@
+[package]
+name = "terminder-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "terminder_desktop"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+terminder-session-core = { path = "../../../crates/session-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.9"
+toml_edit = { version = "0.23", features = ["serde"] }
+sha2 = "0.10"
+fs2 = "0.4"
+directories = "6.0"
+url = "2.5"
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"
+tauri = { version = "=2.12.4", features = [] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[features]
+test-support = ["terminder-session-core/test-fixture"]

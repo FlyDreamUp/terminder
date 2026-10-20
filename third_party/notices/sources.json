@@ -1,0 +1,60 @@
+[
+  {
+    "ecosystem": "cargo",
+    "name": "alloc-stdlib",
+    "version": "0.3.0",
+    "source": "https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/0a81fd6928ea3b33c8cd484aa4575d50ffb98012/LICENSE",
+    "file": "alloc-stdlib-0.3.0-LICENSE.txt",
+    "sha256": "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "selectors",
+    "version": "0.38.0",
+    "source": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+    "file": "selectors-0.38.0-LICENSE.txt",
+    "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webview2-com-macros",
+    "version": "0.8.1",
+    "source": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+    "file": "webview2-com-macros-0.8.1-LICENSE.txt",
+    "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webview2-com-sys",
+    "version": "0.39.1",
+    "source": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+    "file": "webview2-com-sys-0.39.1-LICENSE.txt",
+    "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "webview2-com",
+    "version": "0.39.1",
+    "source": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+    "file": "webview2-com-0.39.1-LICENSE.txt",
+    "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "is-reference",
+    "version": "3.0.3",
+    "source": "https://raw.githubusercontent.com/Rich-Harris/is-reference/8bb053129bfabe2f6a7d7ed050159d67ebe82829/README.md",
+    "file": "is-reference-3.0.3-README.md",
+    "sha256": "2acc01c7ca4596ec1751045eca54e1f27bd785deaadc09d287d76f0d26cbbf87",
+    "note": "The published package and corresponding upstream commit have no standalone license file; preserve the README containing the MIT declaration without inventing a copyright notice."
+  },
+  {
+    "ecosystem": "npm",
+    "name": "locate-character",
+    "version": "3.0.0",
+    "source": "https://raw.githubusercontent.com/Rich-Harris/locate-character/4f08a59ec248121f7002abd02ee7b94e8eda06bc/README.md",
+    "file": "locate-character-3.0.0-README.md",
+    "sha256": "47ed524f92c6aa416672bf3c48f88fd0c9dfde93f6097683820def1d2db65456",
+    "note": "The published package and corresponding upstream commit have no standalone license file; preserve the README containing the MIT declaration without inventing a copyright notice."
+  }
+]
