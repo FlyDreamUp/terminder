@@ -5,3 +5,5 @@ Some locked packages omit their license file from the registry archive. `notices
 `is-reference` and `locate-character` publish only an MIT declaration in their README, including at the recorded upstream revision. Those exact README notices are retained; no copyright holder/year has been invented.
 
 `scripts/release-notices.mjs` checks these hashes and includes notices plus exact source-archive locations in the installer's dependency inventory. New dependency versions that lack bundled notices require a new reviewed supplement.
+
+The npm inventory excludes development-only and extraneous lockfile entries. An extraneous entry can remain in a local `node_modules` but is omitted by a clean `npm ci`; it is not a release dependency. Missing manifests for included dependencies still fail the build. Run `npm --prefix apps/desktop run test:notices` to check both installation states and these failure cases.

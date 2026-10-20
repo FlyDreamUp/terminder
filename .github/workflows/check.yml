@@ -30,6 +30,7 @@ jobs:
       - run: npm --prefix apps/desktop run test
       - run: npm --prefix apps/desktop run test:e2e
       - run: npm --prefix apps/desktop run build
+      - run: npm --prefix apps/desktop run test:notices
       - run: npm --prefix apps/desktop run notices
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --features terminder-session-core/test-fixture --locked -- -D warnings

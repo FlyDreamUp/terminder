@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { readNpmReleaseDependencies } from './npm-release-dependencies.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'target/release-notices');
 const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version=1', '--filter-platform=x86_64-pc-windows-msvc'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }));
@@ -12,12 +13,7 @@ const items = [];
 for (const pkg of metadata.packages.filter(pkg => pkg.source)) {
   items.push({ ecosystem: 'cargo', name: pkg.name, version: pkg.version, license: pkg.license, repository: pkg.repository, sourceArchive: `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`, directory: path.dirname(pkg.manifest_path), licenseFile: pkg.license_file });
 }
-for (const [entry, pkg] of Object.entries(lock.packages)) {
-  if (!entry || pkg.dev) continue;
-  const directory = path.join(root, 'apps/desktop', entry);
-  const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
-  items.push({ ecosystem: 'npm', name: manifest.name, version: pkg.version, license: pkg.license ?? manifest.license, repository: manifest.repository, sourceArchive: pkg.resolved, directory });
-}
+items.push(...await readNpmReleaseDependencies(lock, path.join(root, 'apps/desktop')));
 items.sort((a, b) => `${a.ecosystem}/${a.name}/${a.version}`.localeCompare(`${b.ecosystem}/${b.name}/${b.version}`));
 const text = ['Terminder license', await readFile(path.join(root, 'LICENSE'), 'utf8'), '\nTerminder third-party notices', 'Generated from Cargo.lock and package-lock.json. Cargo inventory includes build/test dependencies as a conservative superset; npm inventory includes production dependencies.', 'This inventory preserves declared license expressions and available upstream notices; release review must resolve missing metadata.\n'];
 const inventory = [];

@@ -17,6 +17,7 @@
     "test:e2e": "playwright test",
     "tauri": "tauri",
     "test:native": "node tests/native-smoke.mjs",
+    "test:notices": "node --test ../../scripts/release-notices.test.mjs",
     "notices": "node ../../scripts/release-notices.mjs"
   },
   "dependencies": {
