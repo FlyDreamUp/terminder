@@ -16,7 +16,7 @@ const port = 9427;
 async function until(check, timeout = 15000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { const result = await check(); if (result) return result; await delay(100); }
-  throw new Error('Native smoke deadline exceeded');
+  throw new Error(`Native smoke deadline exceeded during ${report.stage}`);
 }
 async function endpoint() { try { return await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) })).json(); } catch { return null; } }
 assert.equal(process.platform, 'win32', 'Native WebView2 smoke requires Windows');
@@ -38,21 +38,31 @@ args = ["echo"]
 cwd_policy = "fixed"
 cwd = ${JSON.stringify(output)}
 `);
-const child = spawn(executable, [], { cwd: root, env: { ...process.env, TERMINDER_TEST_DATA_ROOT: output, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-address=127.0.0.1 --remote-debugging-port=${port}` }, stdio: ['ignore', 'pipe', 'pipe'] });
+// WebView2 ignores WEBVIEW2_* environment settings in elevated runner processes.
+// The diagnostic host passes these fixed-purpose settings through the WebView2 API.
+const environment = { ...process.env, TERMINDER_TEST_DATA_ROOT: output, TERMINDER_TEST_CDP_PORT: String(port) };
+for (const key of Object.keys(environment)) {
+  if (key.toUpperCase() === 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS') delete environment[key];
+}
+const child = spawn(executable, [], { cwd: root, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
 child.stdout.resume();
 let stderr = ''; child.stderr.on('data', bytes => { if (stderr.length < 32768) stderr += bytes.toString(); });
 let exit = null; child.on('error', error => { stderr += error.message; exit = { code: null, signal: 'spawn-error' }; }); child.on('exit', (code, signal) => { exit = { code, signal }; });
 let browser;
-const report = { diagnosticBuild: true, environment: { os: os.release(), architecture: process.arch, node: process.version }, executable, started: new Date().toISOString(), checks: [], errors: [], output };
+const report = { diagnosticBuild: true, environment: { os: os.release(), architecture: process.arch, node: process.version }, executable, started: new Date().toISOString(), checks: [], errors: [], output, stage: 'webview2_endpoint', cdpEndpoint: `http://127.0.0.1:${port}` };
 try {
   await until(async () => { if (exit) throw new Error(`App exited early: ${JSON.stringify(exit)} ${stderr}`); return endpoint(); }, 30000);
   report.environment.webview = (await endpoint()).Browser;
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  report.stage = 'webview2_connect';
+  browser = await chromium.connectOverCDP(report.cdpEndpoint, { timeout: 15000 });
+  report.stage = 'application_page';
   const page = await until(() => browser.contexts().flatMap(c => c.pages()).find(p => p.url().includes('tauri.localhost')));
   page.on('pageerror', error => report.errors.push(error.message));
+  report.stage = 'session_running';
   await page.getByText('运行中', { exact: true }).waitFor({ timeout: 20000 });
   const initial = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
   assert.equal(initial.length, 1); assert.equal(initial[0].phase, 'running'); report.checks.push('real profile -> ConPTY -> raw Channel -> xterm');
+  report.stage = 'terminal_interaction';
   await page.locator('.xterm-helper-textarea').focus();
   await page.keyboard.type('native-contract-');
   const cdp = await page.context().newCDPSession(page);
@@ -60,8 +70,12 @@ try {
   // xterm intentionally ignores that path when its accessibility support is enabled.
   await cdp.send('Input.imeSetComposition', { text: '中文', selectionStart: 2, selectionEnd: 2 });
   await cdp.send('Input.insertText', { text: '中文' });
+  // xterm commits composition asynchronously. Wait for the exact echoed input before
+  // Enter so it cannot finalize a stale composition range or clear the pending text.
+  await page.getByRole('listitem').filter({ hasText: /^\s*native-contract-中文\s*$/u }).first().waitFor();
   await page.keyboard.press('Enter');
   await page.getByRole('listitem').filter({ hasText: 'ECHO:native-contract-中文' }).first().waitFor(); report.checks.push('raw UTF-8 input and output roundtrip');
+  report.stage = 'permissions';
   const rejected = await page.evaluate(async binding => {
     try {
       await window.__TAURI_INTERNALS__.invoke('input', new Uint8Array([65]), { headers: { 'x-session-id': binding.sessionId, 'x-view-epoch': crypto.randomUUID(), 'x-protocol-version': '1', 'x-input-sequence': '2' } }); return 'accepted';
@@ -73,6 +87,7 @@ try {
     catch { return true; }
   });
   assert.equal(denied, true); report.checks.push('unauthorized window creation rejected by capability');
+  report.stage = 'workspace_and_tabs';
   await page.getByRole('tab').first().focus(); await page.keyboard.press('F2');
   await page.getByRole('textbox', { name: '标签名称' }).fill('原生诊断会话'); await page.keyboard.press('Enter');
   await until(async () => { try { const workspace = JSON.parse(await readFile(path.join(output, 'state/workspace.json'), 'utf8')); return workspace.tabs[0]?.title === '原生诊断会话'; } catch { return false; } });
@@ -85,16 +100,20 @@ try {
   const retained = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
   assert.equal(retained.length, 2); assert(retained.some(s => s.binding.sessionId === initial[0].binding.sessionId)); report.checks.push('tab switching retains session and buffer');
   await page.screenshot({ path: path.join(output, 'native-terminal.png') });
+  report.stage = 'page_reload';
   await page.reload(); await page.getByText('运行中', { exact: true }).waitFor({ timeout: 15000 });
   const restarted = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
   assert.equal(restarted.length, 1); assert.notEqual(restarted[0].binding.sessionId, initial[0].binding.sessionId); report.checks.push('navigation revokes previous document session ownership');
+  report.stage = 'window_close';
   const closeStarted = Date.now();
   await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid}).CloseMainWindow()`], { timeout: 10000 });
   await until(() => exit, 10000); assert.equal(exit.code, 0); report.closeMs = Date.now() - closeStarted;
   report.checks.push('native window close awaits supervisor cleanup and exits');
-  assert.deepEqual(report.errors, []); report.passed = true;
+  assert.deepEqual(report.errors, []); report.passed = true; report.stage = 'complete';
 } catch (error) {
-  report.passed = false; report.failure = error.stack ?? String(error); report.stderr = stderr;
+  report.passed = false; report.failure = error.stack ?? String(error); report.stderr = stderr; report.processExit = exit;
+  report.appLog = await readFile(path.join(output, 'logs/terminder.log'), 'utf8')
+    .then(text => text.slice(-16384)).catch(error => `Application log unavailable: ${error.code ?? error.message}`);
   if (browser) { for (const page of browser.contexts().flatMap(c => c.pages())) { try { await page.screenshot({ path: path.join(output, 'failure.png') }); } catch { /* The renderer may have already exited. */ } } }
   process.exitCode = 1;
 } finally {

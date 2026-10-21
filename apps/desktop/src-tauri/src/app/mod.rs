@@ -1,3 +1,5 @@
+#[cfg(feature = "test-support")]
+mod diagnostics;
 mod logging;
 mod webview;
 use crate::{
@@ -217,8 +219,24 @@ pub fn run() {
                             let previous = epoch.fetch_add(1, Ordering::AcqRel);
                             supervisor.view_lost(&format!("main:{previous}"));
                         }
-                    })
-                    .build()?;
+                    });
+            #[cfg(feature = "test-support")]
+            let window = {
+                let port = std::env::var_os("TERMINDER_TEST_CDP_PORT");
+                match diagnostics::browser_arguments(
+                    port.as_deref(),
+                    std::env::var_os("TERMINDER_TEST_DATA_ROOT").is_some(),
+                )? {
+                    Some(arguments) => window.additional_browser_args(&arguments),
+                    None => window,
+                }
+            };
+            tracing::info!(
+                diagnostic = cfg!(feature = "test-support"),
+                "webview_starting"
+            );
+            let window = window.build()?;
+            tracing::info!("webview_ready");
             webview::monitor(&window)?;
             if state.config.lock().unwrap().window.restore_geometry
                 && let Ok(workspace) = store::load_workspace(&state.paths.state)
@@ -265,8 +283,11 @@ pub fn run() {
                 request_exit(handle.clone());
             }
         }),
-        Err(error) => windows::show_error(&format!(
-            "无法启动 Terminder。请确认 Microsoft Edge WebView2 Runtime 已安装且可用。\n\n{error}"
-        )),
+        Err(error) => {
+            tracing::error!(%error, "app_start_failed");
+            windows::show_error(&format!(
+                "无法启动 Terminder。请确认 Microsoft Edge WebView2 Runtime 已安装且可用。\n\n{error}"
+            ));
+        }
     }
 }

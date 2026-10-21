@@ -36,7 +36,9 @@ npm --prefix apps/desktop run build
 
 Linux 可运行共享内核和配置测试，不依赖 GTK/WebKitGTK。当前 Unix 后端明确返回不支持，不作为 Linux/macOS 产品支持声明。
 
-原生 WebView2 联调使用显式诊断构建，配置和进程仅存在于 `target/native-smoke/` 的隔离目录。它验证真实 IPC、权限、终端交互、重载与关闭，不替代物理 IME 验收；诊断二进制不可分发：
+原生 WebView2 联调使用显式诊断构建，配置和进程仅存在于 `target/native-smoke/` 的隔离目录。它验证真实 IPC、权限、终端交互、重载与关闭，不替代物理 IME 验收；诊断二进制不可分发。
+
+测试通过 `TERMINDER_TEST_CDP_PORT` 请求诊断宿主用 WebView2 API 开启本机调试端口，避免管理员进程忽略 WebView2 环境参数；必须同时提供隔离数据目录，普通构建不包含该入口。失败报告记录所在阶段和应用日志尾部，CI 同时收集应用日志：
 
 ```powershell
 npm --prefix apps/desktop run build

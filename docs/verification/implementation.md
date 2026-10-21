@@ -121,3 +121,21 @@ Tauri 内置下载器访问 GitHub release 超时，随后从同一官方 releas
 | `target/windows/release/bundle/nsis/Terminder_0.1.0_x64-setup.exe` | 2,579,129 字节 | `6539149ca0556eb61e7511150eec46c6fb2167800731c1aa690e675e8cb9cfd9` |
 
 本次日志与变更快照位于 `target/windows10-baseline/`：`windows-platform-tests.log`、`windows-default-build-test.log`、`windows-workspace-tests.log`、`windows-fmt.log`、双平台 `*-clippy.log`、`linux-tests.log`、`windows-package.log`、`artifacts.json` 及 `changes.patch`。安装包目录中的 `SHA256SUMS.txt` 已更新；`before/` 中保留旧产物与原校验文件。
+
+
+## CI 原生联调的 WebView2 启动（2026-10-21）
+
+CI 报告的空 `checks` 和 `native-smoke.mjs` 首个等待超时，定位到 CDP 端点未就绪。GitHub 的 Windows runner 以管理员身份运行；微软说明高权限宿主会忽略 `WEBVIEW2_*` 环境覆盖（含 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`），但仍接受应用通过 WebView2 API 提供的参数。依据：
+
+- <https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges>
+- <https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security#for-an-elevated-host-app-use-appropriate-override-flags>
+
+`test-support` 下新增显式 CDP 端口入口：端口限定为 1–65535，要求已验证的隔离数据目录，绑定 127.0.0.1；通过 Tauri 的 `additional_browser_args` 写入 API，保留锁定 Wry 的默认浏览器参数。普通构建不编译此入口。原生脚本主动清除旧的 WebView2 参数环境变量，使测试只能通过新的 API 路径连接；30 秒端点期限保持不变。失败报告增加阶段、进程退出状态及最近 16 KiB 应用日志，CI 收集原始日志。
+
+本机为 Windows build 19044 / WebView2 155.0.4283.62，非管理员进程。移除旧环境参数后，修改前的诊断程序复现端点超时，应用日志同时显示会话已 Running；修改后可连接 CDP。完整联调还定位到测试立即发送 Enter 与 xterm 异步完成 composition 的竞态：现在等待准确的 `native-contract-中文` 输入回显，再发送 Enter，原有 `ECHO:` 中文往返断言继续保留。
+
+本次验证：Windows 诊断及宿主单测 12 项通过（含 4 项新增端口/隔离/注入边界测试），fmt、诊断功能 clippy `-D warnings` 与前端 lint 通过。最终原生联调 8 项断言全部通过，覆盖真实 Shell、程序化中文、权限拒绝、元数据、标签、重载和退出；退出耗时 1064 ms 为单次观察。未在本机模拟管理员令牌，远端管理员 runner 仍须推送后重跑确认；这不替代物理 IME 或完整平台稳定性验收。
+
+本次日志位于 `target/native-ci-fix/`：`before-native.log`、`diagnostic-unit-tests.log`、`diagnostic-clippy.log`、`final-native.log`、`final-lint.log`；`before/` 保留编辑前文件。最终原生报告为 `target/native-smoke/2026-10-21T02-27-17-454Z/report.json`。
+
+普通 `tauri build -- --locked` 随后成功生成 NSIS 安装包；已核对应用及 session-core 的 features 均为空，普通主程序不含 `TERMINDER_TEST_CDP_PORT`、`TERMINDER_TEST_DATA_ROOT`、`--remote-debugging-port=` 或 `pty-fixture`。测试进程已退出且 9427 监听已释放；未安装或发布产物。普通构建日志、产物 SHA-256 和汇总保存在 `target/native-ci-fix/ordinary-package.log`、`verification.json`，安装包目录的 `SHA256SUMS.txt` 已更新。

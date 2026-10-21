@@ -33,9 +33,9 @@ jobs:
       - run: npm --prefix apps/desktop run test:notices
       - run: npm --prefix apps/desktop run notices
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --features terminder-session-core/test-fixture --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features terminder-desktop/test-support --locked -- -D warnings
       - run: cargo test -p terminder-session-core --test windows_default_build --locked
-      - run: cargo test --workspace --features terminder-session-core/test-fixture --locked -- --test-threads=1
+      - run: cargo test --workspace --features terminder-desktop/test-support --locked -- --test-threads=1
       - run: cargo build -p terminder-desktop --release --features test-support,tauri/custom-protocol --locked
       - run: npm --prefix apps/desktop run test:native
       - run: npm --prefix apps/desktop run tauri -- build
@@ -52,4 +52,5 @@ jobs:
             target/release/bundle/
             target/native-smoke/*/report.json
             target/native-smoke/*/*.png
+            target/native-smoke/*/logs/*.log*
             target/release-notices/
