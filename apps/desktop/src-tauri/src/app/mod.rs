@@ -24,7 +24,7 @@ use terminder_session_core::{
 
 pub struct AppState {
     pub supervisor: Supervisor,
-    pub config: Mutex<Config>,
+    pub config: Arc<Mutex<Config>>,
     pub paths: Paths,
     pub writer: Arc<Mutex<()>>,
     pub workspace_revision: Arc<Mutex<String>>,
@@ -171,7 +171,7 @@ pub fn run() {
         active_commands: Arc::new(AtomicUsize::new(0)),
         supervisor,
         workspace_revision,
-        config: Mutex::new(document.config),
+        config: Arc::new(Mutex::new(document.config)),
         paths,
         writer: Arc::new(Mutex::new(())),
         closing: AtomicBool::new(false),
@@ -210,7 +210,8 @@ pub fn run() {
                     .title("Terminder")
                     .inner_size(1100.0, 720.0)
                     .min_inner_size(640.0, 400.0)
-                    .decorations(true)
+                    .decorations(false)
+                    .shadow(false)
                     .data_directory(state.paths.logs.parent().unwrap().join("webview"))
                     .on_navigation(navigation_allowed)
                     .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)

@@ -21,7 +21,8 @@ export class OutputProgress {
   }
   finish(sequence: string, bytes: string, truncated: boolean): void {
     const next = { sequence: counter(sequence), bytes: counter(bytes), truncated };
-    if (this.end && (this.end.sequence !== next.sequence || this.end.bytes !== next.bytes)) throw new Error('重复结束屏障不一致');
+    if (next.bytes < next.sequence || next.bytes > next.sequence * 32768n) throw new Error('结束屏障的块数和字节数不匹配');
+    if (this.end && (this.end.sequence !== next.sequence || this.end.bytes !== next.bytes || this.end.truncated !== next.truncated)) throw new Error('重复结束屏障不一致');
     if (next.sequence < this.received || next.bytes < this.receivedBytes) throw new Error('结束屏障早于已收到的输出');
     this.end = next; this.check();
   }
@@ -36,14 +37,49 @@ export class AckQueue {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private sending = false;
   private stopped = false;
+  private attempts = 0;
   constructor(private send: (sequence: string, bytes: string) => Promise<void>, private failed: (error: unknown) => void) {}
-  update(sequence: string, bytes: string): void { this.latest = [sequence, bytes]; if (!this.timer && !this.sending && !this.stopped) this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 8); }
-  private async flush(): Promise<void> {
-    if (this.sending || this.stopped) return;
-    this.sending = true;
-    try { while (this.latest && !this.stopped) { const value = this.latest; this.latest = null; await this.send(...value); } }
-    catch (error) { this.stopped = true; this.failed(error); }
-    finally { this.sending = false; }
+  update(sequence: string, bytes: string): void {
+    if (this.stopped) return;
+    this.latest = [sequence, bytes];
+    this.schedule(8);
   }
-  dispose(): void { this.stopped = true; if (this.timer) clearTimeout(this.timer); this.latest = null; }
+  private schedule(delay: number): void {
+    if (this.timer || this.sending || this.stopped) return;
+    this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, delay);
+  }
+  private async flush(): Promise<void> {
+    if (this.sending || this.stopped || !this.latest) return;
+    this.sending = true;
+    const value = this.latest;
+    this.latest = null;
+    let delay = 8;
+    try {
+      await this.send(...value);
+      this.attempts = 0;
+    } catch (error) {
+      if (this.stopped) return;
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : '';
+      // ACKs are idempotent. Retry explicit congestion, keeping any newer prefix,
+      // but bound attempts so a broken transport is reported to its owner.
+      if (['control_busy', 'request_rate', 'control_timeout'].includes(String(code)) && ++this.attempts < 3) {
+        this.latest ??= value;
+        // The host rate limit resets once per second; an earlier retry cannot reliably recover.
+        delay = code === 'request_rate' ? 1000 : 25 * 2 ** (this.attempts - 1);
+      } else {
+        this.stopped = true;
+        this.latest = null;
+        this.failed(error);
+      }
+    } finally {
+      this.sending = false;
+      if (this.latest) this.schedule(delay);
+    }
+  }
+  dispose(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.latest = null;
+  }
 }

@@ -8,7 +8,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const out = path.join(root, 'target/release-notices');
 const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version=1', '--filter-platform=x86_64-pc-windows-msvc'], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }));
 const lock = JSON.parse(await readFile(path.join(root, 'apps/desktop/package-lock.json'), 'utf8'));
-const supplements = JSON.parse(await readFile(path.join(root, 'third_party/notices/sources.json'), 'utf8'));
+const supplements = JSON.parse(await readFile(path.join(root, 'docs/third_party/notices/sources.json'), 'utf8'));
 const items = [];
 for (const pkg of metadata.packages.filter(pkg => pkg.source)) {
   items.push({ ecosystem: 'cargo', name: pkg.name, version: pkg.version, license: pkg.license, repository: pkg.repository, sourceArchive: `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`, directory: path.dirname(pkg.manifest_path), licenseFile: pkg.license_file });
@@ -27,7 +27,7 @@ for (const item of items) {
   if (!files.length) {
     supplement = supplements.find(s => s.ecosystem === item.ecosystem && s.name === item.name && s.version === item.version);
     if (!supplement) throw new Error(`Missing upstream notice: ${item.name} ${item.version}`);
-    const bytes = await readFile(path.join(root, 'third_party/notices', supplement.file));
+    const bytes = await readFile(path.join(root, 'docs/third_party/notices', supplement.file));
     if (createHash('sha256').update(bytes).digest('hex') !== supplement.sha256) throw new Error(`Notice checksum mismatch: ${supplement.file}`);
     text.push(`--- ${supplement.file} ---\nSource: ${supplement.source}\n${supplement.note ?? ''}\n${bytes.toString('utf8')}\n`);
     files.push(`supplement:${supplement.file}`);
@@ -38,6 +38,4 @@ for (const item of items) {
 await mkdir(out, { recursive: true });
 await writeFile(path.join(out, 'THIRD-PARTY-NOTICES.txt'), text.join('\n'));
 await writeFile(path.join(out, 'dependency-inventory.json'), JSON.stringify(inventory, null, 2));
-const unknown = inventory.filter(item => !item.license && !item.noticeFiles.length);
-if (unknown.length) throw new Error(`Missing license metadata: ${unknown.map(p => p.name).join(', ')}`);
 console.log(`Recorded ${inventory.length} locked dependencies in ${out}`);

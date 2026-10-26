@@ -55,15 +55,25 @@ test('invalid release manifests still fail', async t => {
   await assert.rejects(readNpmReleaseDependencies({ packages: { [entry]: { version: '1.0.0' } } }, root), SyntaxError);
 });
 
+test('installed versions must match the lockfile before their notices are attributed', async t => {
+  const root = await fixture(t);
+  const entry = 'node_modules/required';
+  await install(root, entry, { name: 'required', version: '2.0.0', license: 'MIT' });
+  await assert.rejects(
+    readNpmReleaseDependencies({ packages: { [entry]: { version: '1.0.0' } } }, root),
+    /version mismatch.*required.*1\.0\.0.*2\.0\.0/i,
+  );
+});
+
 test('supplement checksums survive Git checkout with autocrlf enabled or disabled', async t => {
   const root = await fixture(t);
   const source = path.resolve(import.meta.dirname, '..');
   const repository = path.join(root, 'repository');
-  const notices = path.join(repository, 'third_party/notices');
+  const notices = path.join(repository, 'docs/third_party/notices');
   await mkdir(notices, { recursive: true });
-  const supplements = JSON.parse(await readFile(path.join(source, 'third_party/notices/sources.json'), 'utf8'));
+  const supplements = JSON.parse(await readFile(path.join(source, 'docs/third_party/notices/sources.json'), 'utf8'));
   for (const supplement of supplements) {
-    const bytes = await readFile(path.join(source, 'third_party/notices', supplement.file));
+    const bytes = await readFile(path.join(source, 'docs/third_party/notices', supplement.file));
     await writeFile(path.join(notices, supplement.file), bytes);
   }
   // Include repository attributes in an isolated index; never stage the user's checkout.
@@ -75,7 +85,7 @@ test('supplement checksums survive Git checkout with autocrlf enabled or disable
   await writeFile(path.join(repository, 'line-ending-control.txt'), 'first\nsecond\n');
   const git = (...args) => execFileSync('git', ['-c', 'core.attributesFile=', ...args], { cwd: repository, stdio: 'pipe' });
   git('init', '--quiet', '--template=');
-  git('-c', 'core.autocrlf=false', 'add', '--', '.gitattributes', 'third_party/notices', 'line-ending-control.txt');
+  git('-c', 'core.autocrlf=false', 'add', '--', '.gitattributes', 'docs/third_party/notices', 'line-ending-control.txt');
   for (const autocrlf of ['true', 'false']) {
     const checkout = path.join(root, `checkout-${autocrlf}`);
     await mkdir(checkout);
@@ -83,7 +93,7 @@ test('supplement checksums survive Git checkout with autocrlf enabled or disable
     const control = await readFile(path.join(checkout, 'line-ending-control.txt'), 'utf8');
     assert.equal(control, autocrlf === 'true' ? 'first\r\nsecond\r\n' : 'first\nsecond\n');
     for (const supplement of supplements) {
-      const bytes = await readFile(path.join(checkout, 'third_party/notices', supplement.file));
+      const bytes = await readFile(path.join(checkout, 'docs/third_party/notices', supplement.file));
       assert.equal(createHash('sha256').update(bytes).digest('hex'), supplement.sha256, `${supplement.file}, core.autocrlf=${autocrlf}`);
     }
   }

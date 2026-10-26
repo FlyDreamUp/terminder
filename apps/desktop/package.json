@@ -18,7 +18,8 @@
     "tauri": "tauri",
     "test:native": "node tests/native-smoke.mjs",
     "test:notices": "node --test ../../scripts/release-notices.test.mjs",
-    "notices": "node ../../scripts/release-notices.mjs"
+    "notices": "node ../../scripts/release-notices.mjs",
+    "icons": "node ../../scripts/generate-icons.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",

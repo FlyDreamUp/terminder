@@ -359,3 +359,91 @@ fn lost_document_reclaims_prepared_running_and_finished_sessions() {
     }
     assert_eq!(reaped.load(Ordering::Acquire), 2);
 }
+
+#[test]
+fn failed_output_is_not_retried_and_releases_the_global_budget() {
+    struct FailedOutput(AtomicUsize);
+    impl Sink for FailedOutput {
+        fn output(&self, _: Vec<u8>) -> Result<()> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Err(CoreError::new("channel_failed", "output channel lost"))
+        }
+        fn event(&self, _: SessionEvent) -> Result<()> {
+            Ok(())
+        }
+    }
+    let budget = Arc::new(Mutex::new(None));
+    let observed = budget.clone();
+    let factory: Factory = Arc::new(move |_, budget| {
+        *observed.lock().unwrap() = Some(budget.clone());
+        let io = Arc::new(IoState::default());
+        read_loop(
+            std::io::Cursor::new(vec![b'x'; 2 * OUTPUT_CHUNK]),
+            io.clone(),
+            budget,
+        );
+        Ok(Box::new(Controlled {
+            io,
+            closed: false,
+            exited: Arc::new(AtomicBool::new(false)),
+            reaped: Arc::new(AtomicUsize::new(0)),
+        }))
+    });
+    let supervisor = Supervisor::new(factory, 1).unwrap();
+    let handle = supervisor.prepare("main", spec()).unwrap();
+    let sink = Arc::new(FailedOutput(AtomicUsize::new(0)));
+    supervisor
+        .start(
+            "main",
+            handle.binding.clone(),
+            TerminalSize::default(),
+            sink.clone(),
+        )
+        .unwrap();
+    let end = wait(&supervisor, &handle.binding, Phase::Finished);
+    assert_eq!(end.reason, Some(FinishReason::ViewLost));
+    assert!(!end.tail_complete);
+    assert_eq!(sink.0.load(Ordering::Acquire), 1);
+    assert_eq!(budget.lock().unwrap().as_ref().unwrap().used(), 0);
+    // Metadata stays available until the user removes the tab; it must not retain byte leases.
+    assert_eq!(supervisor.list("main").unwrap().len(), 1);
+}
+
+#[test]
+fn losing_a_finished_view_releases_unacknowledged_output() {
+    let budget = Arc::new(Mutex::new(None));
+    let observed = budget.clone();
+    let factory: Factory = Arc::new(move |_, budget| {
+        *observed.lock().unwrap() = Some(budget.clone());
+        let io = Arc::new(IoState::default());
+        read_loop(std::io::Cursor::new(b"tail"), io.clone(), budget);
+        Ok(Box::new(Controlled {
+            io,
+            closed: false,
+            exited: Arc::new(AtomicBool::new(true)),
+            reaped: Arc::new(AtomicUsize::new(0)),
+        }))
+    });
+    let supervisor = Supervisor::new(factory, 1).unwrap();
+    let handle = supervisor.prepare("main", spec()).unwrap();
+    supervisor
+        .start(
+            "main",
+            handle.binding.clone(),
+            TerminalSize::default(),
+            Arc::new(Events::default()),
+        )
+        .unwrap();
+    wait(&supervisor, &handle.binding, Phase::Finished);
+    let budget = budget.lock().unwrap().as_ref().unwrap().clone();
+    assert_eq!(budget.used(), 4);
+    handle.view_failed();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while budget.used() != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "finished view retained its output budget"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}

@@ -1,8 +1,9 @@
 # Terminder
 
-使用 Rust、Tauri 2、Svelte 5 和 xterm.js 的本机桌面终端。按 [设计方案](Terminder-Design.md) 重建；普通构建的最低运行要求为 **Windows 10 21H2 x64（build 19044）**，也放行 Windows 10 22H2 和 Windows 11。**实现、自动化检查和正式平台验收分别记录**，未通过对应 Windows 版本、IME、安装与稳定性矩阵前不视为正式发布。
+使用 Rust、Tauri 2、Svelte 5 和 xterm.js 的本机桌面终端。按 [设计方案](docs/Terminder-Design.md) 重建；普通构建的最低运行要求为 **Windows 10 21H2 x64（build 19044）**，也放行 Windows 10 22H2 和 Windows 11。**实现、自动化检查和正式平台验收分别记录**，未通过对应 Windows 版本、IME、安装与稳定性矩阵前不视为正式发布。
 
 - 原生 ConPTY，每个会话在进程创建时加入独立 Job Object。
+- 一体化无边框顶栏，支持拖动、双击最大化和窗口控制；统一的多尺寸应用图标。
 - 多标签、重命名、搜索、复制粘贴、深浅主题、字体与 Profile 配置。
 - 原始二进制 IPC、连续消费确认、输入顺序和有界背压。
 - 保留退出终端，重启创建新会话；退出窗口先完成资源回收。
@@ -48,6 +49,8 @@ cargo build -p terminder-desktop --release --features test-support,tauri/custom-
 npm --prefix apps/desktop run test:native
 ```
 
+应用图标的可编辑源为 `apps/desktop/src/assets/terminder.svg`。修改后运行 `npm --prefix apps/desktop run icons`，使用项目已安装的 Tauri CLI 重新生成 Windows ICO；应用内图标直接引用同一 SVG。
+
 ## 构建
 
 以下命令使用默认应用 features；Windows 10 不需要启用 `test-support` 或 `test-fixture`。build 19044 已有原生联调证据，但重复创建/关闭 ConPTY 的句柄增长问题仍未解决，正式发布前须通过资源回收验收；版本检查放行不代表稳定性已通过。
@@ -71,6 +74,8 @@ npm --prefix apps/desktop run tauri -- build --config src-tauri/tauri.offline.co
 
 工作区恢复默认关闭，开启后仍会确认重建；不会恢复旧进程、重放输入或保存终端缓冲。关闭会话会结束其实际关联的 Job 成员，包括由它启动且未通过外部代理创建的 GUI 程序。
 
+点击标签栏的 `+` 选择终端类型，再创建对应标签；菜单支持方向键、Enter、Esc 和点击外部关闭。Ctrl+Shift+T 仍直接创建默认终端。
+
 默认快捷键为 Ctrl+Shift+T/W/C/V/F、Ctrl+Tab / Ctrl+Shift+Tab、Ctrl+, 和 Ctrl+= / Ctrl+- / Ctrl+0。双击标签或按 F2 重命名。Ctrl+C/D/Z 保留终端语义。
 
-[实现与验证记录](docs/verification/implementation.md) · [平台验收清单](docs/verification/manual.md) · [后端决策](docs/adr/0001-windows-conpty.md)
+[终端类型菜单](docs/verification/profile-menu-2026-10-26.md) · [图标与一体化窗口](docs/verification/window-chrome-2026-10-26.md) · [本次审查与改进](docs/verification/review-2026-10-26.md) · [实现与验证记录](docs/verification/implementation.md) · [平台验收清单](docs/verification/manual.md) · [后端决策](docs/adr/0001-windows-conpty.md)

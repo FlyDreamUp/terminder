@@ -5,7 +5,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -328,18 +328,10 @@ pub async fn save_config(
     revision: String,
 ) -> Result<store::ConfigDocument> {
     authorize(&window, &state)?;
-    let path = state.paths.config.clone();
-    let writer = state.writer.clone();
-    let document = blocking(&state, move || {
-        let _guard = writer.lock().unwrap();
-        store::save_config(&path, &text, &revision)
+    write_configuration(&state, move |path| {
+        store::save_config(path, &text, &revision)
     })
-    .await?;
-    state
-        .supervisor
-        .set_limit(document.config.session.max_sessions)?;
-    *state.config.lock().unwrap() = document.config.clone();
-    Ok(document)
+    .await
 }
 #[tauri::command]
 pub async fn save_terminal(
@@ -349,15 +341,30 @@ pub async fn save_terminal(
     revision: String,
 ) -> Result<store::ConfigDocument> {
     authorize(&window, &state)?;
+    write_configuration(&state, move |path| {
+        store::update_terminal(path, terminal, &revision)
+    })
+    .await
+}
+
+async fn write_configuration(
+    state: &AppState,
+    save: impl FnOnce(&Path) -> Result<store::ConfigDocument> + Send + 'static,
+) -> Result<store::ConfigDocument> {
     let path = state.paths.config.clone();
     let writer = state.writer.clone();
-    let document = blocking(&state, move || {
+    let config = state.config.clone();
+    let supervisor = state.supervisor.clone();
+    blocking(state, move || {
+        // Apply the entire validated document under the same serialization as the
+        // file write, including externally edited session limits on appearance saves.
         let _guard = writer.lock().unwrap();
-        store::update_terminal(&path, terminal, &revision)
+        let document = save(&path)?;
+        supervisor.set_limit(document.config.session.max_sessions)?;
+        *config.lock().unwrap() = document.config.clone();
+        Ok(document)
     })
-    .await?;
-    *state.config.lock().unwrap() = document.config.clone();
-    Ok(document)
+    .await
 }
 #[tauri::command]
 pub async fn save_workspace(

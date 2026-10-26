@@ -24,6 +24,12 @@
     "icon": [
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    },
     "shortDescription": "A considered home for your local shells",
     "category": "DeveloperTool",
     "resources": {

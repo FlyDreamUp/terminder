@@ -405,6 +405,29 @@ mod tests {
         assert!(Config::parse("schema_version=1\nmispelled=true\n").is_err());
     }
     #[test]
+    fn newer_schema_is_readonly_even_when_its_fields_are_unknown_to_this_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for text in [
+            "schema_version = 2\nnew_setting = true\n",
+            "schema_version = 2\n[terminal]\nrenderer = { mode = 'auto' }\n",
+        ] {
+            fs::write(&path, text).unwrap();
+            let document = load_config(&path);
+            assert!(!document.writable, "new schema must remain read-only");
+            assert_eq!(document.error.unwrap().code, "schema_version");
+            assert_eq!(
+                save_config(&path, &default_text(), &document.revision)
+                    .unwrap_err()
+                    .code,
+                "config_readonly"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+            assert!(!path.with_extension("bak").exists());
+            assert!(!path.with_extension("invalid").exists());
+        }
+    }
+    #[test]
     fn write_keeps_previous_valid_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");

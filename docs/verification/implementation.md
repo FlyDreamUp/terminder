@@ -1,6 +1,6 @@
 # 重开发验证记录
 
-设计基线：`Terminder-Design.md`（用户工作区版本，2026-10-20）。
+设计基线：[设计方案](../Terminder-Design.md)（用户工作区版本，2026-10-20）。
 
 本次为 Major 架构重开发，用户已授权按方案重建。开始时旧 `src/`、Cargo 清单及锁文件已被用户删除，设计文档已有用户改动；不恢复旧实现，不改写设计文档，不自动提交。
 
@@ -82,7 +82,7 @@ Windows 原生检查使用现有 MSVC Rust 1.91.0，依赖组合已编译通过�
 
 Tauri 内置下载器访问 GitHub release 超时，随后从同一官方 release 的 GitHub 资产 API 获取 NSIS 3.13 及 nsis-tauri-utils 0.5.3；同时核对锁定 Tauri CLI 源码中的 SHA-1 与 GitHub 资产 SHA-256，填入官方缓存目录后继续打包。校验记录为本机 `target/packaging-downloads/verified.json`；未降低校验或使用第三方镜像。
 
-安装包携带项目许可、第三方原文通知、273 项锁定依赖元数据及精确源码下载位置。少数注册表包缺失独立许可文件，其固定版本上游通知由 `third_party/notices/sources.json` 记录来源和哈希；两个 npm 包仅发布 README 内的 MIT 声明，原样保留，没有编造版权人或年份。
+安装包携带项目许可、第三方原文通知、273 项锁定依赖元数据及精确源码下载位置。少数注册表包缺失独立许可文件，其固定版本上游通知由 `docs/third_party/notices/sources.json` 记录来源和哈希；两个 npm 包仅发布 README 内的 MIT 声明，原样保留，没有编造版权人或年份。
 
 放宽版本下限前的本机产物（`CARGO_TARGET_DIR=target/windows`；新产物见文末本次验证记录）：
 

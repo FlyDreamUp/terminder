@@ -689,6 +689,11 @@ fn run(
 }
 
 fn tick(e: &mut Entry, shutdown: bool) {
+    if e.control.view_failed.load(Ordering::Acquire) {
+        // A broken binding cannot return its leases through ACKs, even if its
+        // process already finished. Retained tab metadata must not exhaust the budget.
+        e.flow.abandon();
+    }
     if e.snapshot.phase == Phase::Finished {
         return;
     }
@@ -745,6 +750,9 @@ fn tick(e: &mut Entry, shutdown: bool) {
         return;
     }
     let io = e.backend.as_ref().unwrap().io();
+    if e.control.view_failed.load(Ordering::Acquire) {
+        io.discard_output();
+    }
     if let Some(error) = io.take_error() {
         e.error(error);
         e.snapshot.tail_complete = false;
@@ -784,6 +792,8 @@ fn tick(e: &mut Entry, shutdown: bool) {
             });
             if let Err(error) = result {
                 e.error(error);
+                e.control.view_failed.store(true, Ordering::Release);
+                e.flow.abandon();
                 e.snapshot.tail_complete = false;
                 e.close(FinishReason::ViewLost);
             }

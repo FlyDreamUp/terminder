@@ -36,10 +36,12 @@ export class InputQueue {
         if (this.stopped) break;
         const next = this.sequence + 1n;
         await this.send(next.toString(), bytes, reservation?.token);
+        if (this.stopped) return;
         this.sequence = next;
         this.pendingBytes -= bytes.length;
       }
     } catch (error) {
+      if (this.stopped) return;
       const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
       // These rejections explicitly guarantee non-acceptance. An uncertain invoke result is terminal.
       this.stopped = !['input_full', 'control_busy', 'request_rate'].includes(code);
@@ -47,7 +49,7 @@ export class InputQueue {
       this.failed(new Error(`${errorMessage(error)}。后续排队输入未发送；已接受的输入可能继续执行。${this.stopped ? '请关闭并重新启动会话后继续。' : '可稍后重新输入。'}`));
     } finally { this.sending = false; }
   }
-  dispose(): void { this.stopped = true; this.queue = []; }
+  dispose(): void { this.stopped = true; this.queue = []; this.pendingBytes = 0; }
 }
 export function binaryBytes(data: string): Uint8Array {
   const bytes = new Uint8Array(data.length);

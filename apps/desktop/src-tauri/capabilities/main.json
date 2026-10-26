@@ -8,6 +8,10 @@
     "allow-output-consumed", "allow-resize-session", "allow-close-session", "allow-view-failed",
     "allow-forget-session", "allow-list-sessions", "allow-load-config", "allow-save-config",
     "allow-save-terminal", "allow-save-workspace", "allow-read-clipboard", "allow-write-clipboard",
-    "allow-open-link", "allow-diagnostics"
+    "allow-open-link", "allow-diagnostics",
+    "core:window:allow-minimize", "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized", "core:window:allow-close",
+    "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize",
+    "core:event:allow-listen", "core:event:allow-unlisten"
   ]
 }

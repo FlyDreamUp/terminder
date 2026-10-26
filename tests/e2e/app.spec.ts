@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => { await installHost(page); await page.goto('
 test('switching tabs and settings preserves terminal sessions', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.starts)).toBe(1);
-  await page.getByRole('button', { name: '新建终端', exact: true }).click(); await expect(page.getByRole('tab')).toHaveCount(2);
+  await page.getByRole('button', { name: '新建终端', exact: true }).click(); await page.getByRole('menuitem', { name: 'PowerShell', exact: true }).click(); await expect(page.getByRole('tab')).toHaveCount(2);
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.starts)).toBe(2);
   await page.getByRole('tab').first().click(); await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible(); await page.getByRole('combobox', { name: '主题', exact: true }).selectOption('light'); await page.getByRole('button', { name: '保存设置' }).click();

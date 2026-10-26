@@ -4,9 +4,9 @@
   let dialog: HTMLDialogElement;
   onMount(() => { dialog.showModal(); });
 </script>
-<dialog class="confirm-dialog" bind:this={dialog} oncancel={event => { event.preventDefault(); answer(false); }}>
+<dialog class="confirm-dialog" aria-labelledby="confirmation-title" bind:this={dialog} oncancel={event => { event.preventDefault(); answer(false); }}>
   <div class="eyebrow">TERMINDER</div>
-  <h2>{title}</h2><p>{message}</p>
+  <h2 id="confirmation-title">{title}</h2><p>{message}</p>
   {#if preview}<pre class="preview">{preview}</pre>{/if}
   <div class="dialog-actions"><button onclick={() => answer(false)}>取消</button><button class:danger={dangerous} class:primary={!dangerous} onclick={() => answer(true)}>{accept}</button></div>
 </dialog>

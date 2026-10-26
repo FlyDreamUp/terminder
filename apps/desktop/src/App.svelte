@@ -9,6 +9,8 @@
   import TerminalPane from './ui/TerminalPane.svelte';
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import Settings from './ui/Settings.svelte';
+  import WindowControls from './ui/WindowControls.svelte';
+  import appIcon from './assets/terminder.svg';
   interface Tab { id: string; binding: Binding; profile: string; userTitle: string | null; programTitle: string; snapshot: Snapshot | null; activity: boolean; error: string; size: Size | null; renderer: 'webgl' | 'dom'; outputComplete: boolean; closing: boolean; tailTruncated: boolean }
   interface Confirmation { title: string; message: string; preview?: string; accept?: string; dangerous?: boolean; resolve: (answer: boolean) => void }
   let boot = $state<Bootstrap | null>(null); let doc = $state<ConfigDocument | null>(null);
@@ -19,6 +21,12 @@
   // Terminal instances are imperative resources and intentionally outside Svelte state.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
   const views = new Map<string, TerminalView>(); const renderer = new RendererCoordinator();
+  // In-flight commands are imperative guards, not rendered application state.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity
+  const removing = new Set<string>();
+  let profileTrigger = $state<HTMLButtonElement>();
+  let profileMenu = $state<HTMLDivElement>();
+  let profilePosition = $state({ left: 0, top: 0 });
   let workspaceTimer: ReturnType<typeof setTimeout> | null = null;
   const phaseLabels: Record<string, string> = { preparing: '准备中', starting: '启动中', running: '运行中', draining: '排空输出', closing: '关闭中', finalizing: '回收资源', finished: '已结束' };
   let active = $derived(tabs.find(t => t.id === activeId) ?? null);
@@ -30,6 +38,35 @@
   }
   function answer(value: boolean) { const pending = confirm; confirm = null; pending?.resolve(value); void tick().then(() => activeId && views.get(activeId)?.focus()); }
   function select(id: string) { activeId = id; const tab = tabs.find(t => t.id === id); if (tab) tab.activity = false; searching = false; saveWorkspaceSoon(); }
+  function closeProfiles(restoreFocus = false) {
+    if (!showProfiles) return;
+    showProfiles = false;
+    if (restoreFocus) profileTrigger?.focus();
+  }
+  async function toggleProfiles(last = false) {
+    if (showProfiles) { closeProfiles(true); return; }
+    if (busy || !doc) return;
+    showProfiles = true;
+    await tick();
+    if (!showProfiles || !profileMenu || !profileTrigger) return;
+    const anchor = profileTrigger.getBoundingClientRect();
+    profilePosition = { left: Math.max(12, Math.min(anchor.left, window.innerWidth - profileMenu.offsetWidth - 12)), top: anchor.bottom + 8 };
+    const items = profileMenu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+    items[last ? items.length - 1 : 0]?.focus();
+  }
+  function profileKeys(event: KeyboardEvent) {
+    if (event.key === 'Tab') { closeProfiles(true); return; }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeProfiles(true); return; }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || !profileMenu) return;
+    event.preventDefault(); event.stopPropagation();
+    const items = [...profileMenu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    items[next]?.focus();
+  }
+  function dismissProfiles(event: PointerEvent) {
+    if (event.target instanceof Node && !profileMenu?.contains(event.target) && !profileTrigger?.contains(event.target)) closeProfiles();
+  }
   async function newTab(profile = 'default', cwd: string | null = null, customTitle: string | null = null) {
     if (busy || !doc || !host.available()) return; busy = true; showProfiles = false; globalError = '';
     try {
@@ -47,14 +84,22 @@
     }
     if (tab.closing && snapshot.phase === 'finished' && tab.outputComplete) void remove(tab);
   }
-  async function remove(tab: Tab) {
-    if (!tabs.some(t => t.id === tab.id)) return;
+  async function remove(tab: Tab): Promise<boolean> {
+    if (removing.has(tab.id) || !tabs.some(t => t.id === tab.id)) return false;
+    removing.add(tab.id);
     try {
       await host.forget(tab.binding);
-      const index = tabs.findIndex(t => t.id === tab.id); tabs.splice(index, 1);
+      const index = tabs.findIndex(t => t.id === tab.id);
+      if (index < 0) return false;
+      tabs.splice(index, 1);
       if (activeId === tab.id) activeId = tabs[Math.min(index, tabs.length - 1)]?.id ?? null;
       saveWorkspaceSoon();
-    } catch (error) { tab.error = errorMessage(error); }
+      return true;
+    } catch (error) {
+      tab.closing = false;
+      tab.error = errorMessage(error);
+      return false;
+    } finally { removing.delete(tab.id); }
   }
   async function closeTab(tab: Tab) {
     if (tab.closing) return;
@@ -69,7 +114,7 @@
   }
   async function restart(tab: Tab) {
     const profile = tab.profile; const cwd = tab.snapshot?.startupCwd ?? null; const name = tab.userTitle;
-    await remove(tab); await newTab(profile, cwd, name);
+    if (await remove(tab)) await newTab(profile, cwd, name);
   }
   function saveWorkspaceSoon() {
     if (!host.available()) return;
@@ -87,7 +132,17 @@
   }
   function saved(next: ConfigDocument) { doc = next; if (boot) boot.document = next; }
   async function copy() { const selection = activeId ? views.get(activeId)?.selection() : ''; if (selection) { try { await host.clipboardWrite(selection); } catch (error) { globalError = errorMessage(error); } } }
-  async function paste() { if (!activeId) return; try { const text = await host.clipboardRead(); await views.get(activeId)?.paste(text); } catch (error) { globalError = errorMessage(error); } }
+  async function paste() {
+    const id = activeId;
+    if (!id) return;
+    const view = views.get(id);
+    if (!view) return;
+    try {
+      const text = await host.clipboardRead();
+      // Reading the OS clipboard may wait. Never redirect a pending paste to another Shell.
+      if (activeId === id && views.get(id) === view) await view.paste(text);
+    } catch (error) { globalError = errorMessage(error); }
+  }
   async function openSearch() { searching = true; await tick(); searchInput?.focus(); searchInput?.select(); }
   function find(previous = false) { const result = activeId && views.get(activeId)?.find(searchText, previous); searchResult = searchText ? (result ? '已定位' : '未找到') : ''; }
   function closeSearch() { searching = false; if (activeId) { views.get(activeId)?.clearSearch(); views.get(activeId)?.focus(); } }
@@ -160,12 +215,12 @@
   });
 </script>
 
-<svelte:window onkeydown={event => { if (!event.defaultPrevented) shortcut(event, false); }} />
+<svelte:window onkeydown={event => { if (!event.defaultPrevented) shortcut(event, false); }} onpointerdown={dismissProfiles} onresize={() => closeProfiles(true)} />
 <div class="app" data-theme={appTheme}>
-  <header class="topbar">
-    <div class="brand" aria-label="Terminder"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 6 6 6-6 6m9 0h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg><span>terminder</span></div>
+  <header class="topbar" data-tauri-drag-region="deep">
+    <div class="brand" aria-label="Terminder"><img src={appIcon} width="26" height="26" alt="" draggable="false" /><span>terminder</span></div>
     <div class="topbar-center">LOCAL WORKSPACE</div>
-    <div class="topbar-actions"><button class="icon-button" disabled={!active} title="搜索终端 · Ctrl+Shift+F" aria-label="搜索终端" onclick={() => void openSearch()}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><button class="icon-button" disabled={!doc} title="设置 · Ctrl+," aria-label="设置" onclick={() => void openSettings()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg></button></div>
+    <div class="topbar-actions" data-tauri-drag-region="false"><button class="icon-button" disabled={!active} title="搜索终端 · Ctrl+Shift+F" aria-label="搜索终端" onclick={() => void openSearch()}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg></button><button class="icon-button" disabled={!doc} title="设置 · Ctrl+," aria-label="设置" onclick={() => void openSettings()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg></button><WindowControls failed={message => globalError = message} /></div>
   </header>
   <div class="tabbar">
     <div class="tabs" role="tablist" aria-label="终端标签">
@@ -177,8 +232,18 @@
         </div>
       {/each}
     </div>
-    <div class="new-tab-group"><button class="new-tab" aria-label="新建终端" title="新建终端 · Ctrl+Shift+T" disabled={busy || !doc} onclick={() => void newTab()}>+</button><button class="profile-toggle" aria-label="选择 Profile" aria-expanded={showProfiles} disabled={!doc} onclick={() => showProfiles = !showProfiles}>⌄</button></div>
-    {#if showProfiles && doc}<div class="profile-menu"><div class="eyebrow">SHELL PROFILES</div>{#each doc.config.profiles as profile (profile.id)}<button onclick={() => void newTab(profile.id)}><span>{profile.name}</span><small>{boot?.profiles.find(p => p.id === profile.id)?.available ? '本机' : '未发现 / 自定义'}</small></button>{/each}<button class="profile-settings" onclick={() => void openSettings()}>管理 Profiles <span>↗</span></button></div>{/if}
+    <div class="new-tab-group">
+      <button bind:this={profileTrigger} class="new-tab" aria-label="新建终端" title="选择终端类型 · Ctrl+Shift+T 直接新建默认终端" aria-haspopup="menu" aria-expanded={showProfiles} aria-controls="terminal-profile-menu" disabled={busy || !doc} onclick={() => void toggleProfiles()} onkeydown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); void toggleProfiles(event.key === 'ArrowUp'); } }}>+</button>
+    </div>
+    {#if showProfiles && doc}
+      <div bind:this={profileMenu} id="terminal-profile-menu" class="profile-menu" role="menu" aria-label="选择终端类型" tabindex="-1" style={`left: ${profilePosition.left}px; top: ${profilePosition.top}px; max-height: calc(100dvh - ${profilePosition.top + 12}px)`} onkeydown={profileKeys}>
+        <div class="eyebrow">选择终端类型</div>
+        {#each doc.config.profiles as profile (profile.id)}
+          <button role="menuitem" tabindex="-1" aria-label={profile.name} disabled={busy} onclick={() => void newTab(profile.id)}><span>{profile.name}</span><small>{boot?.profiles.find(p => p.id === profile.id)?.available ? '本机' : '未发现 / 自定义'}</small></button>
+        {/each}
+        <button role="menuitem" tabindex="-1" class="profile-settings" onclick={() => void openSettings()}>管理终端配置 <span aria-hidden="true">↗</span></button>
+      </div>
+    {/if}
   </div>
   {#if globalError}<div class="banner error" role="alert"><span>{globalError}</span>{#if doc}<button onclick={() => void openSettings()}>打开设置</button>{/if}<button class="icon-button" aria-label="关闭提示" onclick={() => globalError = ''}>×</button></div>{/if}
   <main>

@@ -8,6 +8,12 @@ export async function readNpmReleaseDependencies(lock, packageRoot) {
     if (!entry || pkg.dev || pkg.extraneous) continue;
     const directory = path.join(packageRoot, entry);
     const manifest = JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8'));
+    if (typeof manifest.name !== 'string' || !manifest.name) {
+      throw new Error(`Missing package name in release manifest: ${entry}`);
+    }
+    if (manifest.version !== pkg.version) {
+      throw new Error(`Release dependency version mismatch: ${manifest.name}, locked ${pkg.version}, installed ${manifest.version}`);
+    }
     items.push({
       ecosystem: 'npm', name: manifest.name, version: pkg.version,
       license: pkg.license ?? manifest.license, repository: manifest.repository,

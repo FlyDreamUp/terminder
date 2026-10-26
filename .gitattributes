@@ -1,2 +1,2 @@
 # Preserve upstream notice bytes: sources.json records their exact SHA-256.
-third_party/notices/** -text
+docs/third_party/notices/** -text

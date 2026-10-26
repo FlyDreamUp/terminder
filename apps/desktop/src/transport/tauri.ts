@@ -46,7 +46,13 @@ export class TauriTransport implements Transport {
       'x-protocol-version': String(binding.protocolVersion), 'x-input-sequence': sequence,
       ...(reservation ? { 'x-input-reservation': reservation } : {}),
     } }), failed, bytes => invoke<string>('reserve_input', { binding, bytes }));
-    this.acks = new AckQueue((sequence, bytes) => invoke('output_consumed', { binding, sequence, bytes }), failed);
+    this.acks = new AckQueue(
+      (sequence, bytes) => invoke('output_consumed', { binding, sequence, bytes }),
+      error => {
+        failed(error);
+        void this.viewFailed().catch(failed);
+      },
+    );
   }
   async start(size: Size, output: (bytes: Uint8Array) => void, event: (event: SessionEvent) => void): Promise<void> {
     this.outputs = new Channel<ArrayBuffer>(); this.events = new Channel<SessionEvent>();

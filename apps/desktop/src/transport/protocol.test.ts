@@ -23,6 +23,14 @@ describe('raw byte and counter contract', () => {
     const progress = new OutputProgress(vi.fn(), vi.fn()); progress.receive(Uint8Array.of(1, 2), (_, done) => done());
     expect(() => progress.finish('1', '1', false)).toThrow();
   });
+  it('rejects contradictory truncation and impossible output barriers', () => {
+    const progress = new OutputProgress(vi.fn(), vi.fn());
+    progress.finish('1', '1', false);
+    expect(() => progress.finish('1', '1', true)).toThrow();
+    for (const [sequence, bytes] of [['0', '1'], ['1', '0'], ['2', '1'], ['1', '32769']]) {
+      expect(() => new OutputProgress(vi.fn(), vi.fn()).finish(sequence, bytes, false)).toThrow();
+    }
+  });
 });
 describe('bounded input', () => {
   it('serializes concurrent sources and reserves an entire paste before sending', async () => {
@@ -39,6 +47,17 @@ describe('bounded input', () => {
     queue.enqueue(Uint8Array.of(1)); await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
     expect(send).toHaveBeenCalledOnce(); expect(queue.canAccept(1)).toBe(false);
   });
+  it('cannot revive a disposed input queue when an in-flight request is rejected', async () => {
+    let reject!: (error: unknown) => void;
+    const failed = vi.fn();
+    const queue = new InputQueue(() => new Promise<void>((_, fail) => { reject = fail; }), failed);
+    queue.enqueue(Uint8Array.of(1));
+    queue.dispose();
+    reject({ code: 'control_busy' });
+    await Promise.resolve();
+    expect(queue.canAccept(1)).toBe(false);
+    expect(failed).not.toHaveBeenCalled();
+  });
   it('coalesces ACKs without making concurrent invokes', async () => {
     vi.useFakeTimers(); let resolve!: () => void;
     const send = vi.fn().mockImplementationOnce(() => new Promise<void>(r => resolve = r)).mockResolvedValue(undefined);
@@ -46,6 +65,41 @@ describe('bounded input', () => {
     await vi.advanceTimersByTimeAsync(8); expect(send).toHaveBeenCalledExactlyOnceWith('2', '20');
     acks.update('3', '30'); expect(send).toHaveBeenCalledOnce(); resolve(); await vi.advanceTimersByTimeAsync(8);
     expect(send.mock.calls).toEqual([['2', '20'], ['3', '30']]); acks.dispose(); vi.useRealTimers();
+  });
+  it('retries a rejected ACK without losing a newer consumed prefix', async () => {
+    vi.useFakeTimers();
+    try {
+      const failed = vi.fn();
+      const send = vi.fn().mockRejectedValueOnce({ code: 'control_busy' }).mockResolvedValue(undefined);
+      const acks = new AckQueue(send, failed);
+      acks.update('1', '10');
+      await vi.advanceTimersByTimeAsync(8);
+      acks.update('2', '20');
+      await vi.runAllTimersAsync();
+      expect(send).toHaveBeenLastCalledWith('2', '20');
+      expect(failed).not.toHaveBeenCalled();
+      acks.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+  it('bounds rejected ACK retries and cancels them on disposal', async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn().mockRejectedValue({ code: 'request_rate' });
+      const failed = vi.fn();
+      const acks = new AckQueue(send, failed);
+      acks.update('1', '10');
+      await vi.runAllTimersAsync();
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(failed).toHaveBeenCalledOnce();
+      const disposed = new AckQueue(send, failed);
+      disposed.update('1', '10');
+      await vi.advanceTimersByTimeAsync(8);
+      disposed.dispose();
+      const attempts = send.mock.calls.length;
+      await vi.runAllTimersAsync();
+      expect(send).toHaveBeenCalledTimes(attempts);
+      expect(failed).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
   });
 });
 

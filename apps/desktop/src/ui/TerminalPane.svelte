@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { Binding, Config } from '../contracts/models';
   import { errorMessage } from '../contracts/models';
   import { TauriTransport } from '../transport/tauri';
@@ -17,7 +17,13 @@
     void view.start().catch(error => { callbacks.error(errorMessage(error)); void transport.viewFailed().catch(e => callbacks.error(errorMessage(e))); });
     return () => { view?.dispose(); ready(null); };
   });
-  $effect(() => { view?.setActive(active); });
-  $effect(() => { view?.configure(config); });
+  $effect(() => {
+    const current = view; const selected = active;
+    untrack(() => current?.setActive(selected));
+  });
+  $effect(() => {
+    const current = view; const options = $state.snapshot(config);
+    untrack(() => current?.configure(options));
+  });
 </script>
 <div class="terminal-pane" class:inactive={!active} aria-hidden={!active} inert={!active} bind:this={container}></div>

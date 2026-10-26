@@ -190,6 +190,23 @@ impl Config {
         if text.len() > 256 * 1024 {
             return Err(CoreError::new("config_size", "配置文件超过 256 KiB"));
         }
+        // Inspect the version before decoding v1 fields: a newer document may also
+        // contain unknown fields or change their types, but must still be read-only.
+        #[derive(Deserialize)]
+        struct Schema {
+            schema_version: Option<toml::Value>,
+        }
+        let schema: Schema = toml::from_str(text)
+            .map_err(|e| CoreError::new("config_parse", format!("配置格式错误：{e}")))?;
+        if schema
+            .schema_version
+            .is_some_and(|version| version.as_integer() != Some(1))
+        {
+            return Err(CoreError::new(
+                "schema_version",
+                "配置版本不受支持；原文件保留且禁止写回",
+            ));
+        }
         let c: Self = toml::from_str(text)
             .map_err(|e| CoreError::new("config_parse", format!("配置格式错误：{e}")))?;
         c.validate()?;

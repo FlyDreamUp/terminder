@@ -36,7 +36,9 @@ export class TerminalView {
   private active = false;
   private disposed = false;
   private running = false;
-  private hasRun = false;
+  private outputReady = false;
+  private outputComplete = false;
+  private broken = false;
   private startupOutput: Uint8Array[] = [];
   private startupBytes = 0;
   private finished = false;
@@ -71,9 +73,10 @@ export class TerminalView {
       if (performance.now() - this.lastTitle < 250) return;
       this.lastTitle = performance.now(); this.callbacks.title([...title].filter(c => c >= ' ' && c !== '\u007f').slice(0, 80).join(''));
     }));
-    this.progress = new OutputProgress((sequence, bytes) => this.transport.ack(sequence, bytes), truncated => {
-      if (this.endTimer) clearTimeout(this.endTimer); this.callbacks.complete(truncated);
-    });
+    this.progress = new OutputProgress(
+      (sequence, bytes) => this.transport.ack(sequence, bytes),
+      truncated => this.completeOutput(truncated),
+    );
     // Capture paste before xterm so context-menu paste follows the same policy as the shortcut.
     container.addEventListener('paste', this.pasteEvent, true); container.addEventListener('drop', this.dropEvent, true);
     this.terminal.open(container);
@@ -86,9 +89,10 @@ export class TerminalView {
     const size = this.measure(); if (!size) throw new Error('终端容器尚不可测量，未启动 Shell');
     this.lastSize = size; this.callbacks.size(size);
     await this.transport.start(size, bytes => {
+      if (this.disposed || this.broken) return;
       try {
         // Running and output travel on separate channels. Do not lose early device-query replies.
-        if (!this.hasRun) {
+        if (!this.outputReady) {
           if (this.startupOutput.length >= 64 || this.startupBytes + bytes.length > 256 * 1024) throw new Error('启动输出超过协议窗口');
           this.startupOutput.push(bytes); this.startupBytes += bytes.length; return;
         }
@@ -106,18 +110,22 @@ export class TerminalView {
     try {
       validateSessionEvent(event, this.transport.binding);
       if (event.type === 'state') {
-        this.running = event.snapshot.phase === 'running'; this.finished = event.snapshot.phase === 'finished';
+        this.running = !this.broken && event.snapshot.phase === 'running'; this.finished = event.snapshot.phase === 'finished';
         this.terminal.options.disableStdin = !this.running;
         this.callbacks.state(event.snapshot);
-        if (this.running) {
-          this.hasRun = true;
+        if (!this.broken && !['preparing', 'starting'].includes(event.snapshot.phase)) {
+          // A close during process creation may deliver tail bytes without ever reaching Running.
+          this.outputReady = true;
           for (const bytes of this.startupOutput) this.write(bytes);
-          this.startupOutput = []; this.startupBytes = 0; this.scheduleResize();
+          this.startupOutput = []; this.startupBytes = 0;
         }
+        if (this.running) this.scheduleResize();
       } else if (event.type === 'error') this.callbacks.error(event.error.message);
-      else {
+      else if (!this.broken) {
         this.progress.finish(event.sequence, event.bytes, event.truncated);
-        if (!this.progress.isComplete()) this.endTimer = setTimeout(() => { if (!this.progress.isComplete()) { this.callbacks.complete(true); this.callbacks.error('尾部输出未在期限内完成显示'); } }, 5000);
+        if (!this.progress.isComplete() && !this.endTimer) {
+          this.endTimer = setTimeout(() => this.fail(new Error('尾部输出未在期限内完成显示')), 5000);
+        }
       }
     } catch (error) { this.fail(error); }
   }
@@ -126,7 +134,23 @@ export class TerminalView {
     if (this.pasteCapture) { this.pasteCapture.push(bytes); return; }
     try { this.transport.input(bytes); } catch (error) { this.callbacks.error(errorMessage(error)); }
   }
-  private fail(error: unknown): void { this.callbacks.error(errorMessage(error)); this.running = false; this.terminal.options.disableStdin = true; void this.transport.viewFailed().catch(e => this.callbacks.error(errorMessage(e))); }
+  private completeOutput(truncated: boolean): void {
+    if (this.outputComplete) return;
+    this.outputComplete = true;
+    if (this.endTimer) clearTimeout(this.endTimer);
+    this.endTimer = null;
+    this.callbacks.complete(truncated);
+  }
+  private fail(error: unknown): void {
+    if (this.broken || this.disposed) return;
+    this.broken = true;
+    this.callbacks.error(errorMessage(error));
+    this.running = false;
+    this.terminal.options.disableStdin = true;
+    this.startupOutput = []; this.startupBytes = 0;
+    this.completeOutput(true);
+    void this.transport.viewFailed().catch(e => this.callbacks.error(errorMessage(e)));
+  }
   private measure(): Size | null {
     if (this.container.clientWidth < 40 || this.container.clientHeight < 20) return null;
     const proposed = this.fit.proposeDimensions(); if (!proposed || proposed.cols < 1 || proposed.rows < 1) return null;
