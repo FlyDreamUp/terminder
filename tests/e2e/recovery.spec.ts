@@ -7,7 +7,7 @@ test('duplicate finished state removes only the requested tab once', async ({ pa
   await expect(page.getByRole('tab')).toHaveCount(1);
   await page.keyboard.press('Control+Shift+T');
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.acknowledgments.length)).toBe(2);
-  await page.getByRole('button', { name: '关闭 PowerShell', exact: true }).first().click();
+  await page.getByRole('button', { name: '关闭 PowerShell 7', exact: true }).first().click();
   await page.getByRole('button', { name: '关闭终端', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__testEvidence.events.filter((event: string) => event === 'forget_session'))).toHaveLength(1);
@@ -17,11 +17,11 @@ test('a rejected forget keeps the finished tab and permits an explicit retry', a
   await installHost(page, { forgetFailures: 1 });
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.acknowledgments.length)).toBe(1);
-  await page.getByRole('button', { name: '关闭 PowerShell', exact: true }).click();
+  await page.getByRole('button', { name: '关闭 PowerShell 7', exact: true }).click();
   await page.getByRole('button', { name: '关闭终端', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('宿主繁忙');
-  await expect(page.getByRole('button', { name: '关闭 PowerShell', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: '关闭 PowerShell', exact: true }).click();
+  await expect(page.getByRole('button', { name: '关闭 PowerShell 7', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '关闭 PowerShell 7', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(0);
 });
 

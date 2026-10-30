@@ -140,7 +140,7 @@ test('partial tab close failure leaves the failed pane available for retry', asy
   await ready(page, { closeFailureAt: 1 }); await split(page);
   await page.keyboard.press('Control+Shift+W'); await page.getByRole('button', { name: '关闭标签页', exact: true }).click();
   await expect(page.locator('.session-pane')).toHaveCount(1); await expect(page.getByRole('alert')).toContainText('测试关闭失败');
-  await page.getByRole('button', { name: '关闭 PowerShell', exact: true }).click(); await page.getByRole('button', { name: '关闭终端', exact: true }).click();
+  await page.getByRole('button', { name: '关闭 PowerShell 7', exact: true }).click(); await page.getByRole('button', { name: '关闭终端', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(0);
 });
 

@@ -31,7 +31,7 @@ test('chooser supports keyboard navigation, dismissal and configuration access',
   const menu = page.getByRole('menu', { name: '选择终端类型' });
   await trigger.focus();
   await trigger.press('ArrowDown');
-  await expect(page.getByRole('menuitem', { name: 'PowerShell', exact: true })).toBeFocused();
+  await expect(page.getByRole('menuitem', { name: 'PowerShell 7', exact: true })).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(page.getByRole('menuitem', { name: '命令提示符', exact: true })).toBeFocused();
   await page.keyboard.press('Escape');

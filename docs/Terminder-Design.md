@@ -645,7 +645,7 @@ settings = "Ctrl+,"
 
 [[profiles]]
 id = "pwsh"
-name = "PowerShell"
+name = "PowerShell 7"
 platforms = ["windows"]
 resolver = "pwsh"
 args = ["-NoLogo"]
@@ -653,7 +653,7 @@ cwd_policy = "inherit_known"
 
 [[profiles]]
 id = "windows-powershell"
-name = "Windows PowerShell"
+name = "PowerShell"
 platforms = ["windows"]
 resolver = "windows-powershell"
 args = ["-NoLogo"]

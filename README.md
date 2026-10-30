@@ -6,7 +6,7 @@ Terminder 是面向 Windows 的本地桌面终端，使用 **Rust、Tauri 2、Sv
 
 ## 功能
 
-- **多标签与 Shell 配置**：内置 PowerShell 7、Windows PowerShell 和 cmd 发现规则，支持自定义 Profile、启动参数、目录及环境变量。
+- **多标签与 Shell 配置**：内置 PowerShell 7、PowerShell 和 cmd 发现规则，支持自定义 Profile、启动参数、目录及环境变量。
 - **嵌套分屏**：在当前窗格向右或向下继续分屏；支持拖动分隔线、方向聚焦、临时最大化及单独关闭。每个标签最多 8 个窗格，所有标签共享最多 16 个会话的配置上限。
 - **终端交互**：搜索、复制粘贴、多行及控制字符粘贴确认；已退出的会话保留画面，可在原位置重新启动。
 - **外观设置**：深色、浅色及跟随系统主题，可配置字体、字号和历史行数；自动使用 WebGL，支持 DOM 兼容模式。
@@ -84,7 +84,7 @@ npm --prefix apps/desktop run icons
 - 拖动分隔线可调整比例；聚焦分隔线后可用对应方向键调整，`Home` / `End` 移至允许边界，`Enter` 恢复均分。
 - 搜索、复制和粘贴作用于当前窗格。关闭窗格只结束该窗格，关闭标签会处理标签中的全部窗格。
 
-默认自动发现顺序为 **PowerShell 7 → Windows PowerShell → cmd**。显式选择某个 Profile 后，启动失败会报告错误，不会改用其他 Shell。内置 Profile 尊重 Shell 启动脚本，不自动注入 `-NoProfile` 或执行策略绕过参数。
+默认自动发现顺序为 **PowerShell 7 → PowerShell → cmd**。菜单中的 PowerShell 对应 Windows PowerShell（`powershell.exe`），PowerShell 7 对应 `pwsh.exe`。显式选择某个 Profile 后，启动失败会报告错误，不会改用其他 Shell。内置 Profile 尊重 Shell 启动脚本，不自动注入 `-NoProfile` 或执行策略绕过参数。
 
 关闭会话会结束其实际关联的 Job 成员，包括由它启动且未通过外部代理创建的 GUI 程序。默认对仍在运行的会话显示关闭确认。
 

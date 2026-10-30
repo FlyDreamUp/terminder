@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => { await installHost(page); await page.goto('
 test('switching tabs and settings preserves terminal sessions', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.starts)).toBe(1);
-  await page.getByRole('button', { name: '新建终端', exact: true }).click(); await page.getByRole('menuitem', { name: 'PowerShell', exact: true }).click(); await expect(page.getByRole('tab')).toHaveCount(2);
+  await page.getByRole('button', { name: '新建终端', exact: true }).click(); await page.getByRole('menuitem', { name: 'PowerShell 7', exact: true }).click(); await expect(page.getByRole('tab')).toHaveCount(2);
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.starts)).toBe(2);
   await page.getByRole('tab').first().click(); await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible(); await page.getByRole('combobox', { name: '主题', exact: true }).selectOption('light'); await page.getByRole('button', { name: '保存设置' }).click();
@@ -32,7 +32,7 @@ test('application shortcuts leave Ctrl+C and paste confirmation under user contr
 
 test('closing the final session waits for cleanup and returns to the welcome view', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as any).__testEvidence.starts)).toBe(1);
-  await page.getByRole('button', { name: '关闭 PowerShell', exact: true }).click();
+  await page.getByRole('button', { name: '关闭 PowerShell 7', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('关闭这个终端'); await page.getByRole('button', { name: '关闭终端', exact: true }).click();
   await expect(page.getByRole('tab')).toHaveCount(0); await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   const calls = await page.evaluate(() => (window as any).__testEvidence.events as string[]);

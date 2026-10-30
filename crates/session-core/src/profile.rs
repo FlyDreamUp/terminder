@@ -107,8 +107,8 @@ impl Profile {
 
 pub fn builtin_profiles() -> Vec<Profile> {
     [
-        ("pwsh", "PowerShell", vec!["-NoLogo"]),
-        ("windows-powershell", "Windows PowerShell", vec!["-NoLogo"]),
+        ("pwsh", "PowerShell 7", vec!["-NoLogo"]),
+        ("windows-powershell", "PowerShell", vec!["-NoLogo"]),
         ("cmd", "Command Prompt", vec![]),
     ]
     .into_iter()
