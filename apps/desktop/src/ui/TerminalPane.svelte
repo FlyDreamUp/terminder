@@ -5,8 +5,8 @@
   import { TauriTransport } from '../transport/tauri';
   import { TerminalView, type ViewCallbacks } from '../terminal/view';
   import type { RendererCoordinator } from '../terminal/renderer';
-  let { binding, active, config, renderer, callbacks, ready }: {
-    binding: Binding; active: boolean; config: Config; renderer: RendererCoordinator;
+  let { binding, active, visible, config, renderer, callbacks, ready }: {
+    binding: Binding; active: boolean; visible: boolean; config: Config; renderer: RendererCoordinator;
     callbacks: ViewCallbacks; ready: (view: TerminalView | null) => void;
   } = $props();
   let container: HTMLDivElement;
@@ -18,12 +18,12 @@
     return () => { view?.dispose(); ready(null); };
   });
   $effect(() => {
-    const current = view; const selected = active;
-    untrack(() => current?.setActive(selected));
+    const current = view; const selected = active; const shown = visible;
+    untrack(() => { current?.setVisible(shown); current?.setActive(selected); });
   });
   $effect(() => {
     const current = view; const options = $state.snapshot(config);
     untrack(() => current?.configure(options));
   });
 </script>
-<div class="terminal-pane" class:inactive={!active} aria-hidden={!active} inert={!active} bind:this={container}></div>
+<div class="terminal-pane" class:inactive={!visible} aria-hidden={!visible} inert={!visible}><div class="terminal-mount" bind:this={container}></div></div>

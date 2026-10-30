@@ -486,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn pane_shortcuts_are_additive_and_explicit_maps_keep_their_bindings() {
+        let defaults = Config::parse("schema_version = 1").unwrap();
+        assert_eq!(defaults.shortcuts["close_tab"], "Ctrl+Shift+W");
+        assert_eq!(defaults.shortcuts["close_pane"], "Ctrl+Alt+W");
+        assert_eq!(defaults.shortcuts["split_right"], "Ctrl+Alt+R");
+        let explicit = Config::parse(
+            "schema_version = 1\n[shortcuts]\nclose_tab = 'Ctrl+Shift+W'\nsplit_right = 'Ctrl+Shift+R'\n",
+        )
+        .unwrap();
+        assert_eq!(explicit.shortcuts.len(), 2);
+        assert_eq!(explicit.shortcuts["split_right"], "Ctrl+Shift+R");
+        let mut conflict = explicit;
+        conflict
+            .shortcuts
+            .insert("close_pane".into(), "Shift+Ctrl+W".into());
+        assert_eq!(conflict.validate().unwrap_err().code, "shortcut_conflict");
+    }
+
+    #[test]
     fn budgets_and_shortcuts_are_validated() {
         let mut c = Config::default();
         c.terminal.scrollback_lines = 20000;

@@ -174,6 +174,106 @@ try {
   assert.equal(retained.length, 2); assert(retained.some(s => s.binding.sessionId === initial[0].binding.sessionId)); assert(retained.every(s => s.profileId === 'test-shell'));
   report.checks.push('plus opens the profile chooser without spawning; selection creates the requested profile; tab switching retains session and buffer');
   await page.screenshot({ path: path.join(output, 'native-terminal.png') });
+  report.stage = 'split_panes';
+  const activePanes = page.locator('.tab-content:not(.inactive) .session-pane');
+  for (const [direction, orientation] of [['向右分屏', 'vertical'], ['向下分屏', 'horizontal']]) {
+    await page.getByRole('button', { name: '分屏', exact: true }).click();
+    await page.getByRole('menuitem', { name: direction, exact: true }).click();
+    const splitSessions = await until(async () => {
+      const sessions = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+      return sessions.length === 3 && sessions.every(s => s.phase === 'running') ? sessions : false;
+    });
+    assert.equal(await activePanes.count(), 2);
+    const added = splitSessions.find(s => !retained.some(old => old.binding.sessionId === s.binding.sessionId));
+    assert.equal(added.profileId, initial[0].profileId);
+    assert.equal(added.startupCwd, initial[0].startupCwd);
+    await activePanes.nth(0).locator('textarea').focus(); await page.keyboard.type('split-first'); await page.keyboard.press('Enter');
+    await activePanes.nth(0).getByRole('listitem').filter({ hasText: 'ECHO:split-first' }).first().waitFor();
+    await activePanes.nth(1).locator('textarea').focus(); await page.keyboard.type('split-second'); await page.keyboard.press('Enter');
+    await activePanes.nth(1).getByRole('listitem').filter({ hasText: 'ECHO:split-second' }).first().waitFor();
+    assert.equal(await activePanes.nth(0).getByRole('listitem').filter({ hasText: 'ECHO:split-second' }).count(), 0);
+    assert.equal(await activePanes.nth(1).getByRole('listitem').filter({ hasText: 'ECHO:split-first' }).count(), 0);
+    const divider = page.getByRole('separator'); assert.equal(await divider.getAttribute('aria-orientation'), orientation);
+    const beforeResize = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+    const box = await divider.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + (orientation === 'vertical' ? 90 : 0), box.y + box.height / 2 + (orientation === 'horizontal' ? 60 : 0)); await page.mouse.up();
+    await until(async () => {
+      const sessions = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+      return [initial[0].binding.sessionId, added.binding.sessionId].every(id => {
+        const before = beforeResize.find(s => s.binding.sessionId === id).size;
+        const after = sessions.find(s => s.binding.sessionId === id).size;
+        return orientation === 'vertical' ? before.cols !== after.cols : before.rows !== after.rows;
+      });
+    });
+    await page.getByRole('button', { name: '最大化窗格 1', exact: true }).click();
+    assert.equal(await activePanes.nth(1).isVisible(), false);
+    await page.getByRole('button', { name: '还原分屏', exact: true }).click();
+    await page.screenshot({ path: path.join(output, orientation === 'vertical' ? 'native-split-columns.png' : 'native-split-rows.png') });
+    await page.getByRole('button', { name: '关闭窗格 2', exact: true }).click();
+    await until(async () => {
+      const sessions = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+      return sessions.length === 2 && sessions.every(s => retained.some(old => old.binding.sessionId === s.binding.sessionId));
+    });
+    await until(async () => (await activePanes.count()) === 1);
+    report.checks.push(`${direction}: independent real ConPTY input, both sizes synchronized, zoom/restore and sibling-preserving cleanup`);
+  }
+  await page.getByRole('button', { name: '分屏', exact: true }).click();
+  await page.getByRole('menuitem', { name: '向右分屏', exact: true }).click();
+  await until(async () => (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}))).filter(s => s.phase === 'running').length === 3);
+  report.stage = 'nested_panes';
+  await page.evaluate(() => { window.__retainedTerminals = [...document.querySelectorAll('.tab-content:not(.inactive) .xterm')]; });
+  const leftBeforeNested = await activePanes.nth(0).boundingBox();
+  await page.getByRole('button', { name: '分屏窗格 2', exact: true }).click();
+  await page.getByRole('menuitem', { name: '向下分屏', exact: true }).click();
+  await until(async () => (await activePanes.count()) === 3 && (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}))).filter(s => s.phase === 'running').length === 4);
+  assert.deepEqual(await activePanes.nth(0).boundingBox(), leftBeforeNested);
+  const rightTop = await activePanes.nth(1).boundingBox(); const rightBottom = await activePanes.nth(2).boundingBox();
+  await page.getByRole('button', { name: '分屏窗格 1', exact: true }).click();
+  await page.getByRole('menuitem', { name: '向下分屏', exact: true }).click();
+  const nestedSessions = await until(async () => {
+    const sessions = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+    return sessions.length === 5 && sessions.every(s => s.phase === 'running' && s.size.cols >= 40 && s.size.rows >= 10) ? sessions : false;
+  });
+  assert.equal(await activePanes.count(), 4);
+  assert.deepEqual(await activePanes.nth(1).boundingBox(), rightTop); assert.deepEqual(await activePanes.nth(2).boundingBox(), rightBottom);
+  assert(await page.evaluate(() => window.__retainedTerminals.every(el => el.isConnected)));
+  for (let index = 0; index < 4; index++) {
+    await activePanes.nth(index).locator('textarea').focus();
+    await page.keyboard.type(`nested-pane-${index + 1}`); await page.keyboard.press('Enter');
+    await activePanes.nth(index).getByRole('listitem').filter({ hasText: `ECHO:nested-pane-${index + 1}` }).first().waitFor();
+    for (let other = 0; other < 4; other++) if (other !== index) assert.equal(await activePanes.nth(other).getByRole('listitem').filter({ hasText: `ECHO:nested-pane-${index + 1}` }).count(), 0);
+  }
+  await page.keyboard.press('Alt+ArrowRight');
+  assert(await activePanes.nth(2).locator('textarea').evaluate(el => el === document.activeElement));
+  await page.keyboard.press('Alt+ArrowUp');
+  assert(await activePanes.nth(1).locator('textarea').evaluate(el => el === document.activeElement));
+  const rootDivider = page.getByRole('separator', { name: '调整窗格 1、4 大小', exact: true });
+  await rootDivider.focus(); await page.keyboard.press('ArrowRight');
+  const activeSessionIds = nestedSessions.filter(s => s.binding.sessionId !== retained.find(s => s.binding.sessionId !== initial[0].binding.sessionId).binding.sessionId).map(s => s.binding.sessionId);
+  await until(async () => {
+    const sessions = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));
+    return activeSessionIds.every(id => sessions.find(s => s.binding.sessionId === id)?.size.cols !== nestedSessions.find(s => s.binding.sessionId === id).size.cols);
+  });
+  const rootRatio = await rootDivider.getAttribute('aria-valuenow');
+  await activePanes.nth(3).locator('textarea').focus(); await page.keyboard.press('Control+Alt+Z');
+  assert.equal(await activePanes.nth(0).isVisible(), false);
+  await page.keyboard.press('Alt+ArrowRight'); assert(await activePanes.nth(2).locator('textarea').evaluate(el => el === document.activeElement));
+  await page.keyboard.press('Control+Alt+Z');
+  assert.equal(await rootDivider.getAttribute('aria-valuenow'), rootRatio);
+  await page.screenshot({ path: path.join(output, 'native-nested-four.png') });
+  const leftBeforeClose = [await activePanes.nth(0).boundingBox(), await activePanes.nth(3).boundingBox()];
+  await page.getByRole('button', { name: '关闭窗格 2', exact: true }).click();
+  await until(async () => (await activePanes.count()) === 3 && (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}))).length === 4);
+  assert.deepEqual(await activePanes.nth(0).boundingBox(), leftBeforeClose[0]); assert.deepEqual(await activePanes.nth(2).boundingBox(), leftBeforeClose[1]);
+  assert(await activePanes.nth(1).locator('textarea').evaluate(el => el === document.activeElement));
+  await activePanes.nth(1).getByRole('listitem').filter({ hasText: 'ECHO:nested-pane-3' }).first().waitFor();
+  await page.getByRole('button', { name: '关闭窗格 2', exact: true }).click();
+  await until(async () => (await activePanes.count()) === 2 && (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}))).length === 3);
+  assert.equal(await page.getByRole('separator').getAttribute('aria-orientation'), 'horizontal');
+  for (const [index, marker] of [[0, 'ECHO:nested-pane-1'], [1, 'ECHO:nested-pane-4']]) await activePanes.nth(index).getByRole('listitem').filter({ hasText: marker }).first().waitFor();
+  await page.screenshot({ path: path.join(output, 'native-nested-collapse.png') });
+  report.checks.push('nested four panes: existing xterm nodes and real ConPTY sessions retained; independent input, spatial focus, all descendant PTY sizes, zoom ratios and local subtree collapse');
   report.stage = 'page_reload';
   await page.reload(); await page.getByText('运行中', { exact: true }).waitFor({ timeout: 15000 });
   const restarted = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('list_sessions', {}));

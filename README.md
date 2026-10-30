@@ -1,45 +1,222 @@
 # Terminder
 
-使用 Rust、Tauri 2、Svelte 5 和 xterm.js 的本机桌面终端。按 [设计方案](docs/Terminder-Design.md) 重建；普通构建的最低运行要求为 **Windows 10 21H2 x64（build 19044）**，也放行 Windows 10 22H2 和 Windows 11。**实现、自动化检查和正式平台验收分别记录**，未通过对应 Windows 版本、IME、安装与稳定性矩阵前不视为正式发布。
+Terminder 是面向 Windows 的本地桌面终端，使用 **Rust、Tauri 2、Svelte 5、TypeScript 和 xterm.js** 构建。通过原生 ConPTY 运行 Shell，在一个窗口中管理多个标签和分屏会话。
 
-- 原生 ConPTY，每个会话在进程创建时加入独立 Job Object。
-- 一体化无边框顶栏，支持拖动、双击最大化和窗口控制；统一的多尺寸应用图标。
-- 多标签、重命名、搜索、复制粘贴、深浅主题、字体与 Profile 配置。
-- 原始二进制 IPC、连续消费确认、输入顺序和有界背压。
-- 保留退出终端，重启创建新会话；退出窗口先完成资源回收。
-- TOML 配置、注释保留、冲突检查、备份与原子替换；可选恢复启动信息。
+当前交付目标为 Windows x64，普通构建的最低运行门槛是 **Windows 10 21H2（build 19044）**，Windows 10 22H2 和 Windows 11 也通过版本检查。项目仍处于开发验证阶段，正式平台验收及已知问题见下文“验证状态”。
 
-## 开发
+## 功能
 
-可在 Windows 10 21H2 x64（build 19044）及以上系统进行普通构建。安装 Rust 1.91.0（MSVC）、Visual Studio C++ Build Tools、Node.js 24.18.0 / npm 11 和 WebView2 Runtime。安装后的应用不需要 Rust 或 Node.js。
+- **多标签与 Shell 配置**：内置 PowerShell 7、Windows PowerShell 和 cmd 发现规则，支持自定义 Profile、启动参数、目录及环境变量。
+- **嵌套分屏**：在当前窗格向右或向下继续分屏；支持拖动分隔线、方向聚焦、临时最大化及单独关闭。每个标签最多 8 个窗格，所有标签共享最多 16 个会话的配置上限。
+- **终端交互**：搜索、复制粘贴、多行及控制字符粘贴确认；已退出的会话保留画面，可在原位置重新启动。
+- **外观设置**：深色、浅色及跟随系统主题，可配置字体、字号和历史行数；自动使用 WebGL，支持 DOM 兼容模式。
+- **桌面窗口**：一体化无边框顶栏、窗口拖动、双击最大化、窗口位置与尺寸恢复。
+- **配置与恢复**：TOML 配置、保存冲突检测、备份及原子替换；可选恢复各窗格的启动信息。
+- **原生会话管理**：每个会话使用独立 Job Object 管理关联进程，终端输入输出通过二进制 IPC 传输，并设有队列与背压限制。
+
+## 开发环境与启动
+
+在 Windows 上准备以下依赖：
+
+| 依赖 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 21H2 x64（build 19044）或更新版本 |
+| Rust | 1.91.0，MSVC 工具链；版本见 [rust-toolchain.toml](rust-toolchain.toml) |
+| C++ 构建环境 | Visual Studio C++ Build Tools 与 Windows SDK |
+| Node.js | 24.18.0，版本见 [.node-version](.node-version) |
+| npm | 11.x；项目声明的包管理器版本为 11.16.0 |
+| 桌面运行时 | Microsoft Edge WebView2 Runtime |
+
+以下命令均从仓库根目录执行：
 
 ```powershell
 npm --prefix apps/desktop ci
 npm --prefix apps/desktop run tauri -- dev
 ```
 
-仅运行 `npm --prefix apps/desktop run dev` 是浏览器预览，不能启动本机 Shell，不提供模拟终端后门。
+Tauri 会自动启动 Vite 开发服务器并打开桌面窗口。安装后的应用不需要 Rust、Node.js 或 C++ 构建工具。
+
+仅预览前端界面时可运行：
+
+```powershell
+npm --prefix apps/desktop run dev
+```
+
+浏览器预览不具备原生宿主连接，不能启动本机 Shell。当前 Unix 后端返回“不支持”；Linux 可运行共享内核和配置测试，不代表已支持 Linux/macOS 桌面终端。
+
+## 构建安装包
+
+在 Windows 上安装依赖后，执行普通构建：
+
+```powershell
+npm --prefix apps/desktop run tauri -- build -- --locked
+```
+
+默认输出位置如下。应用程序和安装包的路径会随 `CARGO_TARGET_DIR` 改变，第三方许可及依赖清单固定生成在仓库的 `target/release-notices/` 中：
+
+| 产物 | 默认路径 |
+| --- | --- |
+| 应用程序 | `target/release/terminder-desktop.exe` |
+| NSIS 安装包 | `target/release/bundle/nsis/` |
+| 第三方许可及依赖清单 | `target/release-notices/` |
+
+安装包采用当前用户安装模式。默认构建在目标机器缺少 WebView2 时下载 Evergreen bootstrapper；需要在缺少运行时的离线机器上安装时，构建包含离线 WebView2 安装器的变体：
+
+```powershell
+npm --prefix apps/desktop run tauri -- build --config src-tauri/tauri.offline.conf.json -- --locked
+```
+
+构建流程会生成并打包第三方许可和依赖清单。正式签名证书及发布渠道需由发行方提供，当前仓库未配置自动更新服务。
+
+应用图标源文件为 [terminder.svg](apps/desktop/src/assets/terminder.svg)。修改后运行以下命令，使用项目锁定的 Tauri CLI 更新 Windows ICO：
+
+```powershell
+npm --prefix apps/desktop run icons
+```
+
+## 使用说明
+
+### 标签与窗格
+
+- 点击标签栏的 `+` 选择终端类型；新建标签快捷键直接启动默认 Profile。双击标签，或在标签按钮获得焦点时按 `F2`，可重命名。
+- 标签栏及各窗格的分屏菜单均可向右或向下拆分。新窗格使用来源窗格的 Profile，并按其目录策略选择已知启动目录；不会跟踪 Shell 内后续执行的 `cd`。
+- 新建分屏要求拆分后的每格至少容纳 40 列 × 10 行，实际空间要求随字体及字号变化。达到每标签窗格上限、全局会话上限或空间不足时，菜单会说明原因。
+- 拖动分隔线可调整比例；聚焦分隔线后可用对应方向键调整，`Home` / `End` 移至允许边界，`Enter` 恢复均分。
+- 搜索、复制和粘贴作用于当前窗格。关闭窗格只结束该窗格，关闭标签会处理标签中的全部窗格。
+
+默认自动发现顺序为 **PowerShell 7 → Windows PowerShell → cmd**。显式选择某个 Profile 后，启动失败会报告错误，不会改用其他 Shell。内置 Profile 尊重 Shell 启动脚本，不自动注入 `-NoProfile` 或执行策略绕过参数。
+
+关闭会话会结束其实际关联的 Job 成员，包括由它启动且未通过外部代理创建的 GUI 程序。默认对仍在运行的会话显示关闭确认。
+
+### 默认快捷键
+
+以下为新配置的默认绑定，可在 TOML 的 `[shortcuts]` 中修改对应动作：
+
+| 操作 | 快捷键 | 配置动作 |
+| --- | --- | --- |
+| 新建默认终端标签 | `Ctrl+Shift+T` | `new_tab` |
+| 关闭当前标签及全部窗格 | `Ctrl+Shift+W` | `close_tab` |
+| 关闭当前窗格 | `Ctrl+Alt+W` | `close_pane` |
+| 向右 / 向下分屏 | `Ctrl+Alt+R` / `Ctrl+Alt+D` | `split_right` / `split_down` |
+| 聚焦左 / 右窗格 | `Alt+←` / `Alt+→` | `focus_left` / `focus_right` |
+| 聚焦上 / 下窗格 | `Alt+↑` / `Alt+↓` | `focus_up` / `focus_down` |
+| 最大化 / 还原当前窗格 | `Ctrl+Alt+Z` | `toggle_pane_zoom` |
+| 下一个 / 上一个标签 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | `next_tab` / `previous_tab` |
+| 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | `copy` / `paste` |
+| 搜索当前终端 | `Ctrl+Shift+F` | `find` |
+| 打开设置 | `Ctrl+,` | `settings` |
+| 增大 / 减小 / 重置字号 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | `zoom_in` / `zoom_out` / `zoom_reset` |
+
+方向键在配置中写作 `ArrowLeft`、`ArrowRight`、`ArrowUp`、`ArrowDown`。例如：`focus_left = "Alt+ArrowLeft"`。
+
+已有显式 `[shortcuts]` 表按原样读取，不自动补齐新增动作；要在旧配置中使用分屏快捷键，需要手动添加对应映射。默认情况下，`Ctrl+C`、`Ctrl+D`、`Ctrl+Z` 保留终端语义。
+
+### 配置
+
+通过设置中的“外观”调整主题、字体及渲染器，通过“Profiles 与配置”编辑完整 TOML。下面展示常用字段及默认值；修改已有文件时编辑对应字段即可：
+
+```toml
+schema_version = 1
+default_profile = "auto"
+
+[terminal]
+font_family = ["Cascadia Mono", "Consolas", "monospace"]
+font_size_px = 14.0
+theme = "system"
+scrollback_lines = 5000
+renderer = "auto"
+
+[window]
+restore_geometry = true
+restore_tabs = false
+
+[session]
+max_sessions = 16
+confirm_close_running = true
+
+[clipboard]
+confirm_multiline = true
+max_paste_bytes = 262144
+```
+
+`theme` 可设为 `system`、`dark` 或 `light`，`renderer` 可设为 `auto` 或 `dom`。字号范围为 8–48，历史行数为 0–20000，会话上限为 1–16，且“会话上限 × 历史行数”不得超过 160000。
+
+Profile 可配置程序、参数、环境变量和 `cwd_policy`（`inherit_known`、`home`、`fixed`）。自定义程序必须使用绝对路径；`resolver` 与 `program` 必须且只能指定一个，固定目录策略必须提供 `cwd`。Shell、参数和目录的修改只影响新会话，外观设置保存后应用到已打开的终端。
+
+### 用户数据与恢复
+
+| 数据 | Windows 路径 |
+| --- | --- |
+| 配置 | `%APPDATA%\Terminder\config.toml` |
+| 工作区启动信息与窗口几何 | `%LOCALAPPDATA%\Terminder\state\workspace.json` |
+| 日志 | `%LOCALAPPDATA%\Terminder\logs\` |
+
+配置与工作区保存时会在同目录保留最近有效备份 `config.bak` / `workspace.bak`；修复损坏配置时保留 `config.invalid` 原文。未知 schema 版本不会被覆盖。日志按 10 MiB 阈值轮转，最多保留 5 份文件。
+
+`window.restore_tabs` 默认关闭，启用后启动时仍会确认是否重建。恢复只使用保存的 Profile、启动目录和自定义标签名创建新进程，Shell 启动脚本可能执行；不会恢复旧进程、重放输入或保存终端缓冲。
+
+当前工作区格式将各窗格分别保存为启动项，恢复后成为独立标签，**不恢复分屏树、比例或窗格最大化状态**。
+
+## 项目结构
+
+```text
+terminder/
+├── apps/desktop/
+│   ├── src/
+│   │   ├── App.svelte       # 标签、窗格及应用交互
+│   │   ├── contracts/      # 前端数据契约
+│   │   ├── state/          # 布局、工作区与快捷键
+│   │   ├── terminal/       # xterm、渲染与粘贴
+│   │   ├── transport/      # Tauri 桥接与输入输出协议
+│   │   └── ui/             # 设置、菜单、窗格和窗口控件
+│   ├── src-tauri/          # Rust 桌面宿主、配置存储及平台集成
+│   └── tests/              # 原生 WebView2 验证及浏览器测试入口
+├── crates/session-core/    # 会话生命周期、ConPTY、Job 与流控
+├── tests/
+│   ├── e2e/                # Playwright 界面与终端测试
+│   └── fixtures/           # PTY 与协议测试夹具
+├── scripts/                # 图标与第三方许可生成
+└── docs/                   # 设计、决策与验收记录
+```
+
+## 开发检查与测试
+
+CI 配置见 [.github/workflows/check.yml](.github/workflows/check.yml)。下列命令用于开发验证，具体执行结果以对应环境的报告为准。
+
+### Rust 与前端检查
 
 ```powershell
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo test -p terminder-session-core --test windows_default_build --locked
-cargo test -p terminder-session-core --features test-fixture --locked --test windows_contract -- --test-threads=1
+
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run lint
 npm --prefix apps/desktop run test
 npm --prefix apps/desktop run test:e2e
 npm --prefix apps/desktop run build
+npm --prefix apps/desktop run test:notices
 ```
 
-浏览器 E2E 在 Windows 使用已安装的 Edge，其他环境需先运行 `npm --prefix apps/desktop exec playwright install chromium`。浏览器夹具只验证组件与 xterm 行为，不能证明真实 Tauri IPC、WebView2 IME 或 OS 回收正确。
+浏览器 E2E 在 Windows 使用已安装的 Edge；其他环境需先安装 Playwright Chromium：
 
-Linux 可运行共享内核和配置测试，不依赖 GTK/WebKitGTK。当前 Unix 后端明确返回不支持，不作为 Linux/macOS 产品支持声明。
+```sh
+npm --prefix apps/desktop exec -- playwright install chromium
+```
 
-原生 WebView2 联调使用显式诊断构建，配置和进程仅存在于 `target/native-smoke/` 的隔离目录。它验证真实 IPC、权限、终端交互、重载与关闭，不替代物理 IME 验收；诊断二进制不可分发。
+浏览器测试使用宿主夹具和真实 xterm，不能代替真实 Tauri IPC、WebView2 输入法或原生进程回收验证。Linux 上的 Rust 工作区检查不依赖 GTK/WebKitGTK。
 
-测试通过 `TERMINDER_TEST_CDP_PORT` 请求诊断宿主用 WebView2 API 开启本机调试端口，避免管理员进程忽略 WebView2 环境参数；必须同时提供隔离数据目录，普通构建不包含该入口。失败报告记录所在阶段和应用日志尾部，CI 同时收集应用日志：
+### Windows 原生检查
+
+先验证普通构建的真实 Shell 启动，再运行带测试夹具的完整 Windows 检查：
+
+```powershell
+cargo test -p terminder-session-core --test windows_default_build --locked
+cargo clippy --workspace --all-targets --features terminder-desktop/test-support --locked -- -D warnings
+cargo test --workspace --features terminder-desktop/test-support --locked -- --test-threads=1
+```
+
+真实 WebView2 联调使用显式诊断构建：
 
 ```powershell
 npm --prefix apps/desktop run build
@@ -49,33 +226,26 @@ cargo build -p terminder-desktop --release --features test-support,tauri/custom-
 npm --prefix apps/desktop run test:native
 ```
 
-应用图标的可编辑源为 `apps/desktop/src/assets/terminder.svg`。修改后运行 `npm --prefix apps/desktop run icons`，使用项目已安装的 Tauri CLI 重新生成 Windows ICO；应用内图标直接引用同一 SVG。
+脚本将配置、日志、截图和报告写入 `target/native-smoke/` 的隔离目录，通过本机诊断端口验证真实 IPC、窗口操作、分屏输入、尺寸同步、重载和关闭。它不替代物理输入法验收。
 
-## 构建
+诊断二进制仅用于测试，不可分发；制作安装包时重新执行普通 `tauri build`。若使用自定义构建目录，可向 `test:native` 依次传入桌面程序和 `pty-fixture.exe` 的路径。
 
-以下命令使用默认应用 features；Windows 10 不需要启用 `test-support` 或 `test-fixture`。build 19044 已有原生联调证据，但重复创建/关闭 ConPTY 的句柄增长问题仍未解决，正式发布前须通过资源回收验收；版本检查放行不代表稳定性已通过。
+### 验证状态
 
-```powershell
-npm --prefix apps/desktop run tauri -- build
-# 同一应用资源的离线 WebView2 依赖安装变体：
-npm --prefix apps/desktop run tauri -- build --config src-tauri/tauri.offline.conf.json
-```
+已有记录覆盖浏览器交互、Rust 规则及 Windows 10 build 19044 上的原生联调；详细范围见 [2026-10-28 嵌套分屏验证记录](docs/verification/nested-split-panes-2026-10-28.md)。
 
-构建时从锁文件和依赖原文生成第三方许可及依赖清单，并随安装包携带。默认在 `target/release/bundle/nsis/` 输出用户级 NSIS 安装包，缺少 WebView2 时下载官方 Evergreen bootstrapper。离线机器缺少运行时须使用 offlineInstaller 变体。正式签名证书和发布渠道由发行方提供，本仓库不包含证书、自动更新服务或遥测上传。
+该记录中，重复创建和关闭 ConPTY 的句柄增长仍导致 Windows 资源回收测试失败。完整 Windows 版本矩阵、物理 IME、跨显示器 DPI、屏幕阅读器、长时压力及干净机器安装验收尚未完成。通过版本检查、界面测试或安装包构建，均不代表这些验收已通过。
 
-## 用户数据
+## 相关文档
 
-- 配置：`%APPDATA%\Terminder\config.toml`。
-- 启动信息：`%LOCALAPPDATA%\Terminder\state\workspace.json`。
-- 日志：`%LOCALAPPDATA%\Terminder\logs\`，单文件 10 MiB，最多 5 份。
-- 配置和工作区最近有效备份使用同目录 `.bak` 文件；修复损坏配置时另存一份 `.invalid` 原文。未知 schema 不写回。
+- [设计方案](docs/Terminder-Design.md)
+- [Windows ConPTY 后端决策](docs/adr/0001-windows-conpty.md)
+- [实现与验证记录](docs/verification/implementation.md)
+- [原生验收清单](docs/verification/manual.md)
+- [嵌套分屏与兼容性记录](docs/verification/nested-split-panes-2026-10-28.md)
+- [工程审查记录](docs/verification/review-2026-10-26.md)
+- [第三方许可补充说明](docs/third_party/README.md)
 
-默认只创建默认 Shell；自动选择顺序为 PowerShell 7、Windows PowerShell、cmd。明确选择失败不会切换 Shell。Shell Profile 默认受尊重，不注入 `-NoProfile`、执行策略绕过或 `cd` 命令。
+## 许可证
 
-工作区恢复默认关闭，开启后仍会确认重建；不会恢复旧进程、重放输入或保存终端缓冲。关闭会话会结束其实际关联的 Job 成员，包括由它启动且未通过外部代理创建的 GUI 程序。
-
-点击标签栏的 `+` 选择终端类型，再创建对应标签；菜单支持方向键、Enter、Esc 和点击外部关闭。Ctrl+Shift+T 仍直接创建默认终端。
-
-默认快捷键为 Ctrl+Shift+T/W/C/V/F、Ctrl+Tab / Ctrl+Shift+Tab、Ctrl+, 和 Ctrl+= / Ctrl+- / Ctrl+0。双击标签或按 F2 重命名。Ctrl+C/D/Z 保留终端语义。
-
-[终端类型菜单](docs/verification/profile-menu-2026-10-26.md) · [图标与一体化窗口](docs/verification/window-chrome-2026-10-26.md) · [本次审查与改进](docs/verification/review-2026-10-26.md) · [实现与验证记录](docs/verification/implementation.md) · [平台验收清单](docs/verification/manual.md) · [后端决策](docs/adr/0001-windows-conpty.md)
+本项目使用 [MIT License](LICENSE)。第三方依赖的许可及来源由构建流程生成，并随安装包分发。

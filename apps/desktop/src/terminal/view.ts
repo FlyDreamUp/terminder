@@ -12,12 +12,15 @@ import { RendererCoordinator } from './renderer';
 import { dark, light, isDark } from './themes';
 import { inspectPaste } from './paste';
 
+export interface FontMetrics { width: number; height: number; font: string }
+export function fontKey(config: Config): string { return JSON.stringify([config.terminal.font_size_px, config.terminal.font_family]); }
 export interface ViewCallbacks {
   state(snapshot: Snapshot): void;
   error(message: string): void;
   activity(): void;
   title(title: string): void;
   size(size: Size): void;
+  metrics(metrics: FontMetrics): void;
   renderer(renderer: 'webgl' | 'dom'): void;
   complete(truncated: boolean): void;
   shortcut(event: KeyboardEvent): boolean;
@@ -34,6 +37,7 @@ export class TerminalView {
   private endTimer: ReturnType<typeof setTimeout> | null = null;
   private progress: OutputProgress;
   private active = false;
+  private visible = false;
   private disposed = false;
   private running = false;
   private outputReady = false;
@@ -45,6 +49,7 @@ export class TerminalView {
   private resizing = false;
   private resizeAgain = false;
   private lastSize: Size | null = null;
+  private lastMetrics = '';
   private lastTitle = 0;
   private pasteCapture: Uint8Array[] | null = null;
   private media = matchMedia('(prefers-color-scheme: dark)');
@@ -155,14 +160,23 @@ export class TerminalView {
     if (this.container.clientWidth < 40 || this.container.clientHeight < 20) return null;
     const proposed = this.fit.proposeDimensions(); if (!proposed || proposed.cols < 1 || proposed.rows < 1) return null;
     const cols = Math.min(1000, proposed.cols); const rows = Math.min(1000, proposed.rows, Math.floor(250000 / cols));
-    this.terminal.resize(cols, rows); return { cols, rows };
+    this.terminal.resize(cols, rows);
+    // xterm 6 sizes this DOM surface to its exact grid. Read the rendered surface rather
+    // than private renderer services; cols/rows and element are public xterm APIs.
+    const screen = this.terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect();
+    if (screen && screen.width > 0 && screen.height > 0) {
+      const metrics = { width: Math.round(screen.width / cols * 100) / 100, height: Math.round(screen.height / rows * 100) / 100, font: fontKey(this.config) };
+      const key = JSON.stringify(metrics);
+      if (key !== this.lastMetrics) { this.lastMetrics = key; this.callbacks.metrics(metrics); }
+    }
+    return { cols, rows };
   }
   private scheduleResize(): void {
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
     this.resizeTimer = setTimeout(() => { this.resizeTimer = null; void this.resize(); }, 40);
   }
   private async resize(): Promise<void> {
-    if (this.disposed || !this.active) return;
+    if (this.disposed || !this.visible) return;
     if (this.resizing) { this.resizeAgain = true; return; }
     const size = this.measure(); if (!size) return;
     if (!this.running || (size.cols === this.lastSize?.cols && size.rows === this.lastSize?.rows)) return;
@@ -171,10 +185,15 @@ export class TerminalView {
     catch (error) { this.callbacks.error(`终端尺寸同步失败：${errorMessage(error)}`); }
     finally { this.resizing = false; if (this.resizeAgain) { this.resizeAgain = false; void this.resize(); } }
   }
+  setVisible(visible: boolean): void {
+    if (this.disposed || this.visible === visible) return;
+    this.visible = visible;
+    if (visible) this.scheduleResize();
+  }
   setActive(active: boolean): void {
     if (this.disposed) return;
     this.active = active;
-    if (active) { this.renderer.activate(this.terminal, this.config.terminal.renderer === 'auto', r => this.callbacks.renderer(r)); this.scheduleResize(); requestAnimationFrame(() => { if (!this.disposed && this.active) this.terminal.focus(); }); }
+    if (active) { this.renderer.activate(this.terminal, this.config.terminal.renderer === 'auto', r => this.callbacks.renderer(r)); this.scheduleResize(); }
     else this.renderer.release(this.terminal);
   }
   configure(config: Config): void {
@@ -184,7 +203,7 @@ export class TerminalView {
     if (this.active) this.renderer.activate(this.terminal, config.terminal.renderer === 'auto', r => this.callbacks.renderer(r)); this.scheduleResize();
   }
   selection(): string { return this.terminal.getSelection(); }
-  focus(): void { this.terminal.focus(); }
+  focus(): void { if (!this.disposed && this.visible) this.terminal.focus(); }
   find(text: string, previous = false): boolean { return text.length > 0 && (previous ? this.search.findPrevious(text) : this.search.findNext(text)); }
   clearSearch(): void { this.search.clearDecorations(); }
   async paste(text: string): Promise<void> {
