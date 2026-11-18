@@ -26,7 +26,6 @@ pub struct SessionHandle {
 struct Control {
     close: AtomicBool,
     view_failed: AtomicBool,
-    detached: AtomicBool,
 }
 impl SessionHandle {
     pub fn close(&self) {
@@ -103,8 +102,8 @@ impl Entry {
         }
         let (sequence, bytes) = self.flow.end();
         self.event(SessionEvent::OutputEnd {
-            sequence: sequence.to_string(),
-            bytes: bytes.to_string(),
+            sequence,
+            bytes,
             truncated: !self.snapshot.tail_complete,
         });
         self.output_ended = true;
@@ -112,7 +111,7 @@ impl Entry {
     fn finished(&mut self) {
         self.end_output();
         self.phase(Phase::Finished);
-        // Finished sessions retain only metadata. The front-end keeps its terminal buffer.
+        // Finished sessions retain only metadata. The pane keeps its terminal buffer.
     }
 }
 
@@ -167,16 +166,11 @@ enum Command {
         binding: Binding,
         reply: Reply<()>,
     },
-    Limit {
-        max: usize,
-        reply: Reply<()>,
-    },
 }
 struct Shared {
     sender: SyncSender<Command>,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
-    handles: Arc<Mutex<BTreeMap<String, (String, SessionHandle)>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 #[derive(Clone)]
@@ -188,18 +182,10 @@ impl Supervisor {
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = shutdown.clone();
         let done = stopped.clone();
-        let handles = Arc::new(Mutex::new(BTreeMap::new()));
-        let controls = handles.clone();
         let worker = thread::Builder::new()
             .name("session-supervisor".into())
             .spawn(move || {
-                run(
-                    receiver,
-                    factory,
-                    max_sessions.clamp(1, MAX_SESSIONS),
-                    stop,
-                    controls,
-                );
+                run(receiver, factory, max_sessions.clamp(1, MAX_SESSIONS), stop);
                 done.store(true, Ordering::Release);
             })
             .map_err(|e| CoreError::io("supervisor_start", e))?;
@@ -207,7 +193,6 @@ impl Supervisor {
             sender,
             shutdown,
             stopped,
-            handles,
             worker: Mutex::new(Some(worker)),
         })))
     }
@@ -228,16 +213,11 @@ impl Supervisor {
         })?
     }
     pub fn prepare(&self, owner: &str, spec: SpawnSpec) -> Result<SessionHandle> {
-        let handle = self.request(|reply| Command::Prepare {
+        self.request(|reply| Command::Prepare {
             owner: owner.into(),
             spec,
             reply,
-        })?;
-        self.0.handles.lock().unwrap().insert(
-            handle.binding.session_id.clone(),
-            (owner.into(), handle.clone()),
-        );
-        Ok(handle)
+        })
     }
     pub fn start(
         &self,
@@ -325,42 +305,12 @@ impl Supervisor {
             reply,
         })
     }
-    pub fn set_limit(&self, max: usize) -> Result<()> {
-        self.request(|reply| Command::Limit { max, reply })
-    }
-    pub fn close(&self, owner: &str, binding: &Binding, view_failed: bool) -> Result<()> {
-        binding.validate()?;
-        let handles = self.0.handles.lock().unwrap();
-        let (actual, handle) = handles
-            .get(&binding.session_id)
-            .ok_or_else(|| CoreError::new("session_missing", "会话不存在"))?;
-        if actual != owner || handle.binding != *binding {
-            return Err(CoreError::new("wrong_binding", "会话绑定无效"));
-        }
-        if view_failed {
-            handle.view_failed();
-        } else {
-            handle.close();
-        }
-        Ok(())
-    }
     pub fn forget(&self, owner: &str, binding: Binding) -> Result<()> {
         self.request(|reply| Command::Forget {
             owner: owner.into(),
-            binding: binding.clone(),
+            binding,
             reply,
-        })?;
-        self.0.handles.lock().unwrap().remove(&binding.session_id);
-        Ok(())
-    }
-    /// Called only by the trusted host on a definitive native view failure or navigation.
-    pub fn view_lost(&self, owner: &str) {
-        for (actual, handle) in self.0.handles.lock().unwrap().values() {
-            if actual == owner {
-                handle.control.detached.store(true, Ordering::Release);
-                handle.view_failed();
-            }
-        }
+        })
     }
     pub fn shutdown(&self) {
         self.0.shutdown.store(true, Ordering::Release);
@@ -406,7 +356,7 @@ fn handle(
     entries: &mut BTreeMap<String, Entry>,
     factory: &Factory,
     budget: &Arc<GlobalBudget>,
-    limit: &mut usize,
+    limit: usize,
 ) {
     match command {
         Command::Prepare { owner, spec, reply } => {
@@ -416,7 +366,7 @@ fn handle(
                     .values()
                     .filter(|e| e.snapshot.phase != Phase::Finished)
                     .count()
-                    >= *limit
+                    >= limit
                     || entries.len() >= 64
                 {
                     return Err(CoreError::new(
@@ -428,7 +378,6 @@ fn handle(
                 let control = Arc::new(Control {
                     close: AtomicBool::new(false),
                     view_failed: AtomicBool::new(false),
-                    detached: AtomicBool::new(false),
                 });
                 let handle = SessionHandle {
                     binding: binding.clone(),
@@ -436,15 +385,10 @@ fn handle(
                 };
                 let snapshot = SessionSnapshot {
                     binding: binding.clone(),
-                    profile_id: spec.profile_id.clone(),
-                    profile_name: spec.profile_name.clone(),
-                    startup_cwd: spec.cwd.to_str().map(str::to_owned),
-                    cwd_source: spec.cwd_source.clone(),
                     phase: Phase::Preparing,
                     reason: None,
                     exit_code: None,
                     tail_complete: true,
-                    congested: false,
                     cleanup_error: None,
                     size: spec.size,
                 };
@@ -620,35 +564,20 @@ fn handle(
             }
             let _ = reply.send(result);
         }
-        Command::Limit { max, reply } => {
-            let result = if (1..=MAX_SESSIONS).contains(&max) {
-                *limit = max;
-                Ok(())
-            } else {
-                Err(CoreError::new("session_limit", "会话上限须为 1–16"))
-            };
-            let _ = reply.send(result);
-        }
     }
 }
 
-fn run(
-    receiver: Receiver<Command>,
-    factory: Factory,
-    mut limit: usize,
-    shutdown: Arc<AtomicBool>,
-    controls: Arc<Mutex<BTreeMap<String, (String, SessionHandle)>>>,
-) {
+fn run(receiver: Receiver<Command>, factory: Factory, limit: usize, shutdown: Arc<AtomicBool>) {
     let mut entries = BTreeMap::new();
     let budget = Arc::new(GlobalBudget::default());
     let mut rotation = 0;
     loop {
         match receiver.recv_timeout(Duration::from_millis(4)) {
             Ok(command) => {
-                handle(command, &mut entries, &factory, &budget, &mut limit);
+                handle(command, &mut entries, &factory, &budget, limit);
                 for _ in 0..15 {
                     match receiver.try_recv() {
-                        Ok(cmd) => handle(cmd, &mut entries, &factory, &budget, &mut limit),
+                        Ok(cmd) => handle(cmd, &mut entries, &factory, &budget, limit),
                         Err(_) => break,
                     }
                 }
@@ -664,19 +593,11 @@ fn run(
                 shutdown.load(Ordering::Acquire),
             );
         }
-        let detached: Vec<_> = entries
-            .iter()
-            .filter(|(_, e)| {
-                e.snapshot.phase == Phase::Finished
-                    && (e.control.detached.load(Ordering::Acquire)
-                        || (e.sink.is_none() && e.since.elapsed() > Duration::from_secs(15)))
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in detached {
-            entries.remove(&id);
-            controls.lock().unwrap().remove(&id);
-        }
+        entries.retain(|_, e| {
+            !(e.snapshot.phase == Phase::Finished
+                && e.sink.is_none()
+                && e.since.elapsed() > Duration::from_secs(15))
+        });
         rotation = rotation.wrapping_add(1);
         if shutdown.load(Ordering::Acquire)
             && entries
@@ -778,34 +699,25 @@ fn tick(e: &mut Entry, shutdown: bool) {
         }
         _ => {}
     }
-    // One block per session per turn guarantees a saturated terminal cannot monopolize IPC.
-    if let Some(size) = io.next_output_size() {
-        if e.flow.can_send(size)
-            && !e.control.view_failed.load(Ordering::Acquire)
-            && let Some(block) = io.pop_output()
-        {
-            let result = e.flow.submit(block).and_then(|bytes| {
-                e.sink
-                    .as_ref()
-                    .ok_or_else(|| CoreError::new("view_missing", "终端视图已失效"))?
-                    .output(bytes)
-            });
-            if let Err(error) = result {
-                e.error(error);
-                e.control.view_failed.store(true, Ordering::Release);
-                e.flow.abandon();
-                e.snapshot.tail_complete = false;
-                e.close(FinishReason::ViewLost);
-            }
+    // One block per session per turn prevents one terminal from monopolizing output delivery.
+    if let Some(size) = io.next_output_size()
+        && e.flow.can_send(size)
+        && !e.control.view_failed.load(Ordering::Acquire)
+        && let Some(block) = io.pop_output()
+    {
+        let result = e.flow.submit(block).and_then(|bytes| {
+            e.sink
+                .as_ref()
+                .ok_or_else(|| CoreError::new("view_missing", "终端视图已失效"))?
+                .output(bytes)
+        });
+        if let Err(error) = result {
+            e.error(error);
+            e.control.view_failed.store(true, Ordering::Release);
+            e.flow.abandon();
+            e.snapshot.tail_complete = false;
+            e.close(FinishReason::ViewLost);
         }
-        let congested = !e.flow.can_send(size);
-        if e.snapshot.congested != congested {
-            e.snapshot.congested = congested;
-            e.publish();
-        }
-    } else if e.snapshot.congested {
-        e.snapshot.congested = false;
-        e.publish();
     }
     if e.snapshot.phase == Phase::Draining
         && (io.output_done() || e.since.elapsed() >= Duration::from_secs(2))

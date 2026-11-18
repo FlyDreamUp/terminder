@@ -1,6 +1,8 @@
 //! Windows ownership boundary: every handle is non-inheritable and owned exactly once.
 //! The process joins its kill-on-close Job in CreateProcess, before it can run user code.
 use super::*;
+mod conpty;
+use conpty::Conpty;
 use std::{
     ffi::{OsStr, c_void},
     fs::File,
@@ -56,11 +58,25 @@ fn quote(argument: &OsStr) -> Result<Vec<u16>> {
     out.push(b'"' as u16);
     Ok(out)
 }
+fn command_argument(argument: &OsStr) -> Result<Vec<u16>> {
+    let units = wide(argument)?;
+    let value = &units[..units.len() - 1];
+    // cmd.exe parses switches before applying CRT-style argument rules. Quoting
+    // simple switches such as /D or /C changes their meaning; only quote when needed.
+    if !value.is_empty()
+        && !value
+            .iter()
+            .any(|&unit| unit <= b' ' as u16 || unit == b'"' as u16)
+    {
+        return Ok(value.to_vec());
+    }
+    quote(argument)
+}
 fn command_line(spec: &SpawnSpec) -> Result<Vec<u16>> {
     let mut line = quote(spec.program.as_os_str())?;
     for arg in &spec.args {
         line.push(b' ' as u16);
-        line.extend(quote(arg)?);
+        line.extend(command_argument(arg)?);
     }
     line.push(0);
     if line.len() > 32767 {
@@ -183,6 +199,8 @@ impl Drop for Attributes {
 }
 
 struct Native {
+    api: Arc<Conpty>,
+    close_requested: bool,
     console: Option<HPCON>,
     job: Option<OwnedHandle>,
     process: Option<OwnedHandle>,
@@ -196,7 +214,11 @@ struct Native {
 unsafe impl Send for Native {}
 
 pub fn spawn(spec: SpawnSpec, budget: Arc<GlobalBudget>) -> Result<Box<dyn Backend>> {
+    Ok(Box::new(spawn_native(spec, budget, 0)?))
+}
+fn spawn_native(spec: SpawnSpec, budget: Arc<GlobalBudget>, creation_flags: u32) -> Result<Native> {
     spec.validate()?;
+    let api = Conpty::load()?;
     let program = wide(spec.program.as_os_str())?;
     let cwd = wide(spec.cwd.as_os_str())?;
     let mut line = command_line(&spec)?;
@@ -219,14 +241,13 @@ pub fn spawn(spec: SpawnSpec, budget: Arc<GlobalBudget>) -> Result<Box<dyn Backe
     let (reader, pty_output) = pipe()?;
     let mut console = 0;
     let hr = unsafe {
-        CreatePseudoConsole(
+        api.create(
             COORD {
                 X: spec.size.cols as i16,
                 Y: spec.size.rows as i16,
             },
             pty_input.as_raw_handle(),
             pty_output.as_raw_handle(),
-            0,
             &mut console,
         )
     };
@@ -242,6 +263,8 @@ pub fn spawn(spec: SpawnSpec, budget: Arc<GlobalBudget>) -> Result<Box<dyn Backe
     drop(pty_output);
     let io = Arc::new(IoState::default());
     let mut native = Native {
+        api,
+        close_requested: false,
         console: Some(console),
         job: Some(job),
         process: None,
@@ -287,7 +310,7 @@ pub fn spawn(spec: SpawnSpec, budget: Arc<GlobalBudget>) -> Result<Box<dyn Backe
             null(),
             null(),
             0,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | creation_flags,
             env.as_ptr().cast(),
             cwd.as_ptr(),
             &startup.StartupInfo,
@@ -299,7 +322,7 @@ pub fn spawn(spec: SpawnSpec, budget: Arc<GlobalBudget>) -> Result<Box<dyn Backe
     }
     native.process = Some(owned(process.hProcess, "process_handle")?);
     drop(owned(process.hThread, "initial_thread")?);
-    Ok(Box::new(native))
+    Ok(native)
 }
 impl Backend for Native {
     fn io(&self) -> Arc<IoState> {
@@ -311,7 +334,7 @@ impl Backend for Native {
             .console
             .ok_or_else(|| CoreError::new("closing", "终端正在关闭"))?;
         let result = unsafe {
-            ResizePseudoConsole(
+            self.api.resize(
                 console,
                 COORD {
                     X: size.cols as i16,
@@ -349,18 +372,14 @@ impl Backend for Native {
         Ok(self.exit_code)
     }
     fn begin_close(&mut self) -> Result<()> {
-        if let Some(console) = self.console {
-            // Pre-26100 Windows may block here. The supervisor and drain reader stay independent.
-            let closer = thread::Builder::new()
-                .name("pty-close".into())
-                .spawn(move || unsafe {
-                    ClosePseudoConsole(console);
-                })
-                .map_err(|e| CoreError::io("closer_start", e))?;
-            self.console = None;
-            self.closer = Some(closer);
+        if !self.close_requested {
+            // CreateProcess returning does not mean the client's console/DLL initialization
+            // finished. Terminate the entire Job before detaching its console, including
+            // children that may still be starting after the root's natural exit.
+            self.close_requested = true;
+            self.force_kill()?;
         }
-        Ok(())
+        self.close_console_if_idle()
     }
     fn force_kill(&mut self) -> Result<()> {
         if let Some(job) = &self.job
@@ -380,6 +399,9 @@ impl Backend for Native {
         }
     }
     fn try_reap(&mut self) -> Result<bool> {
+        if self.close_requested {
+            self.close_console_if_idle()?;
+        }
         if self.console.is_some() || self.closer.as_ref().is_some_and(|h| !h.is_finished()) {
             return Ok(false);
         }
@@ -391,24 +413,8 @@ impl Backend for Native {
         if self.process.is_some() && self.poll_exit()?.is_none() {
             return Ok(false);
         }
-        // Root exit is not enough: every process associated with the Job must have exited.
-        if let Some(job) = &self.job {
-            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-            if unsafe {
-                QueryInformationJobObject(
-                    job.as_raw_handle(),
-                    JobObjectBasicAccountingInformation,
-                    (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                    null_mut(),
-                )
-            } == 0
-            {
-                return Err(last("job_accounting"));
-            }
-            if info.ActiveProcesses != 0 {
-                return Ok(false);
-            }
+        if !self.job_is_empty()? {
+            return Ok(false);
         }
         for worker in [&mut self.reader, &mut self.writer, &mut self.closer] {
             if let Some(worker) = worker.take() {
@@ -422,14 +428,58 @@ impl Backend for Native {
         Ok(true)
     }
 }
+impl Native {
+    fn job_is_empty(&self) -> Result<bool> {
+        let Some(job) = &self.job else {
+            return Ok(true);
+        };
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+        if unsafe {
+            QueryInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(last("job_accounting"));
+        }
+        Ok(info.ActiveProcesses == 0)
+    }
+    fn close_console_if_idle(&mut self) -> Result<()> {
+        if let Some(console) = self.console {
+            // TerminateJobObject is asynchronous. Poll without blocking the supervisor;
+            // the existing cleanup deadline remains observable if Windows cannot finish.
+            if !self.job_is_empty()? {
+                return Ok(());
+            }
+            let api = self.api.clone();
+            let closer = thread::Builder::new()
+                .name("pty-close".into())
+                .spawn(move || unsafe {
+                    api.close(console);
+                })
+                .map_err(|e| CoreError::io("closer_start", e))?;
+            self.console = None;
+            self.closer = Some(closer);
+        }
+        Ok(())
+    }
+}
 impl Drop for Native {
     fn drop(&mut self) {
         // This fallback is used on partial construction too; terminate before waiting for any worker.
         let _ = self.force_kill();
         self.io.drain();
+        // Partial construction and direct backend owners must respect the same ordering.
+        while matches!(self.job_is_empty(), Ok(false)) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         if let Some(console) = self.console.take() {
             unsafe {
-                ClosePseudoConsole(console);
+                self.api.close(console);
             }
         }
         self.cancel_io();
@@ -450,24 +500,81 @@ impl Drop for Native {
 }
 
 #[cfg(test)]
+static NATIVE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn close_before_client_initialization_terminates_without_loader_failure() {
+        let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let spec = SpawnSpec {
+            profile_id: "suspended-client".into(),
+            profile_name: "Suspended client".into(),
+            program: std::env::current_exe().unwrap(),
+            args: vec![],
+            env: Default::default(),
+            cwd: std::env::current_dir().unwrap(),
+            size: TerminalSize::default(),
+        };
+        let mut native = spawn_native(
+            spec.clone(),
+            Arc::new(GlobalBudget::default()),
+            CREATE_SUSPENDED,
+        )
+        .unwrap();
+        assert_eq!(native.poll_exit().unwrap(), None);
+        let started = Instant::now();
+        native.io.drain();
+        native.begin_close().unwrap();
+        native.begin_close().unwrap();
+        while !native.try_reap().unwrap() {
+            while native.io.pop_output().is_some() {}
+            if native.poll_exit().unwrap().is_some() && native.io.output_done() {
+                native.cancel_io();
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "suspended client cleanup timed out"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(native.poll_exit().unwrap(), Some(1));
+        assert!(native.process.is_none() && native.job.is_none() && native.console.is_none());
+        assert!(native.reader.is_none() && native.writer.is_none() && native.closer.is_none());
+        // Direct owners and partial construction use Drop instead of the supervisor.
+        let native =
+            spawn_native(spec, Arc::new(GlobalBudget::default()), CREATE_SUSPENDED).unwrap();
+        let process = native.process.as_ref().unwrap().try_clone().unwrap();
+        drop(native);
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+        let mut code = 0;
+        assert_ne!(
+            unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) },
+            0
+        );
+        assert_eq!(code, 1);
+    }
     fn quoted(s: &str) -> String {
         String::from_utf16(&quote(OsStr::new(s)).unwrap()).unwrap()
     }
     #[test]
     fn bare_conpty_creation_releases_its_handles() {
+        let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         fn cycle() {
+            let api = Conpty::load().unwrap();
             let (input, writer) = pipe().unwrap();
             let (reader, output) = pipe().unwrap();
             let mut console = 0;
             assert_eq!(
                 unsafe {
-                    CreatePseudoConsole(
+                    api.create(
                         COORD { X: 80, Y: 24 },
                         input.as_raw_handle(),
                         output.as_raw_handle(),
-                        0,
                         &mut console,
                     )
                 },
@@ -481,7 +588,7 @@ mod tests {
                 while matches!(std::io::Read::read(&mut file,&mut bytes),Ok(n) if n>0) {}
             });
             unsafe {
-                ClosePseudoConsole(console);
+                api.close(console);
             }
             drop(writer);
             worker.join().unwrap();
@@ -510,5 +617,56 @@ mod tests {
         assert_eq!(quoted("a\"b"), "\"a\\\"b\"");
         assert_eq!(quoted("C:\\a\\"), "\"C:\\a\\\\\"");
         assert_eq!(quoted("中文"), "\"中文\"");
+    }
+}
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::*;
+
+    #[test]
+    fn quoting_preserves_empty_spaces_quotes_and_trailing_backslashes() {
+        for (input, expected) in [
+            ("/D", "/D"),
+            ("/C", "/C"),
+            ("", "\"\""),
+            ("a b", "\"a b\""),
+            ("a\"b", "\"a\\\"b\""),
+            ("C:\\plain\\", "C:\\plain\\"),
+            ("C:\\with space\\", "\"C:\\with space\\\\\""),
+        ] {
+            assert_eq!(
+                String::from_utf16(&command_argument(OsStr::new(input)).unwrap()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cmd_switches_execute_the_requested_command() {
+        let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        use std::os::windows::{ffi::OsStringExt, process::CommandExt};
+        let program =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+                .join("System32")
+                .join("cmd.exe");
+        let mut command = std::process::Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        for argument in ["/D", "/Q", "/C", "echo TERMINDER_CMD_ARGUMENTS_OK"] {
+            command.raw_arg(std::ffi::OsString::from_wide(
+                &command_argument(OsStr::new(argument)).unwrap(),
+            ));
+        }
+        let output = command.output().expect("launch system cmd.exe");
+        assert!(
+            output.status.success(),
+            "cmd exit: {:?}, stderr: {:?}",
+            output.status,
+            output.stderr
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "TERMINDER_CMD_ARGUMENTS_OK"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Byte accounting is independent of the host IPC implementation.
+//! Bounded byte accounting shared by the session supervisor and native view adapter.
 use crate::model::*;
 use std::{
     collections::VecDeque,

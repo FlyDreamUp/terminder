@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/session-core", "apps/desktop/src-tauri"]
-default-members = ["crates/session-core"]
+members = ["crates/session-core", "apps/desktop"]
+default-members = ["apps/desktop"]
 resolver = "2"
 
 [workspace.package]
@@ -13,10 +13,13 @@ license = "MIT"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-uuid = { version = "1.18", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["v4"] }
 tracing = "0.1"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+[profile.dev]
+debug = 0

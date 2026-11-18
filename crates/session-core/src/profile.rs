@@ -221,27 +221,24 @@ pub fn spawn_spec(
     explicit_cwd: Option<&Path>,
     inherited_cwd: Option<&Path>,
 ) -> Result<SpawnSpec> {
-    let (cwd, source) = if let Some(path) = explicit_cwd {
+    let cwd = if let Some(path) = explicit_cwd {
         if !path.is_absolute() || !path.is_dir() {
             return Err(CoreError::new(
                 "invalid_cwd",
                 "指定启动目录无效，请修正后重试",
             ));
         }
-        (path.to_path_buf(), "explicit")
+        path.to_path_buf()
     } else if profile.cwd_policy == "inherit_known"
         && inherited_cwd.is_some_and(|p| p.is_absolute() && p.is_dir())
     {
-        (
-            inherited_cwd.expect("checked").to_path_buf(),
-            "inherited_startup",
-        )
+        inherited_cwd.expect("checked").to_path_buf()
     } else if profile.cwd_policy != "home" && profile.cwd.as_ref().is_some_and(|p| p.is_dir()) {
-        (profile.cwd.clone().expect("checked"), "profile")
+        profile.cwd.clone().expect("checked")
     } else if profile.cwd_policy == "fixed" {
         return Err(CoreError::new("invalid_cwd", "Profile 的固定目录不存在"));
     } else {
-        (home_dir()?, "home")
+        home_dir()?
     };
     let mut vars: BTreeMap<OsString, Option<OsString>> = BTreeMap::from([
         ("TERM_PROGRAM".into(), Some("Terminder".into())),
@@ -264,7 +261,6 @@ pub fn spawn_spec(
         args: profile.args.into_iter().map(Into::into).collect(),
         env: vars,
         cwd,
-        cwd_source: source.into(),
         size: TerminalSize::default(),
     };
     spec.validate()?;

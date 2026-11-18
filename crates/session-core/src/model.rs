@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_SESSIONS: usize = 16;
 pub const OUTPUT_CHUNK: usize = 32 * 1024;
 pub const INPUT_CHUNK: usize = 16 * 1024;
@@ -12,8 +10,7 @@ pub const OUTPUT_WINDOW_BYTES: usize = 256 * 1024;
 pub const OUTPUT_WINDOW_BLOCKS: usize = 64;
 pub const GLOBAL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("{message}")]
 pub struct CoreError {
     pub code: String,
@@ -42,8 +39,7 @@ impl CoreError {
 }
 pub type Result<T> = std::result::Result<T, CoreError>;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalSize {
     pub cols: u16,
     pub rows: u16,
@@ -73,34 +69,29 @@ impl Default for TerminalSize {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     pub session_id: String,
     pub view_epoch: String,
-    pub protocol_version: u32,
 }
 impl Binding {
     pub fn fresh() -> Self {
         Self {
             session_id: uuid::Uuid::new_v4().to_string(),
             view_epoch: uuid::Uuid::new_v4().to_string(),
-            protocol_version: PROTOCOL_VERSION,
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if self.protocol_version != PROTOCOL_VERSION
-            || uuid::Uuid::parse_str(&self.session_id).is_err()
+        if uuid::Uuid::parse_str(&self.session_id).is_err()
             || uuid::Uuid::parse_str(&self.view_epoch).is_err()
         {
-            return Err(CoreError::new("invalid_binding", "会话标识或协议版本无效"));
+            return Err(CoreError::new("invalid_binding", "会话标识或视图标识无效"));
         }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     Preparing,
     Starting,
@@ -110,8 +101,7 @@ pub enum Phase {
     Finalizing,
     Finished,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishReason {
     Exited { code: u32 },
     ClosedByUser,
@@ -121,31 +111,24 @@ pub enum FinishReason {
     TimedOut,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct SessionSnapshot {
     pub binding: Binding,
-    pub profile_id: String,
-    pub profile_name: String,
-    pub startup_cwd: Option<String>,
-    pub cwd_source: String,
     pub phase: Phase,
     pub reason: Option<FinishReason>,
     pub exit_code: Option<u32>,
     pub tail_complete: bool,
-    pub congested: bool,
     pub cleanup_error: Option<CoreError>,
     pub size: TerminalSize,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum SessionEvent {
     State {
         snapshot: Box<SessionSnapshot>,
     },
     OutputEnd {
-        sequence: String,
-        bytes: String,
+        sequence: u64,
+        bytes: u64,
         truncated: bool,
     },
     Error {
@@ -161,7 +144,6 @@ pub struct SpawnSpec {
     pub args: Vec<OsString>,
     pub env: BTreeMap<OsString, Option<OsString>>,
     pub cwd: PathBuf,
-    pub cwd_source: String,
     pub size: TerminalSize,
 }
 impl SpawnSpec {
@@ -186,21 +168,6 @@ impl SpawnSpec {
     }
 }
 
-pub fn parse_counter(s: &str) -> Result<u64> {
-    if s.is_empty()
-        || s.len() > 20
-        || !s.bytes().all(|b| b.is_ascii_digit())
-        || (s.len() > 1 && s.starts_with('0'))
-    {
-        return Err(CoreError::new(
-            "invalid_counter",
-            "计数必须是规范的无符号十进制字符串",
-        ));
-    }
-    s.parse()
-        .map_err(|_| CoreError::new("invalid_counter", "计数超出 64 位范围"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,12 +184,5 @@ mod tests {
             .validate()
             .is_ok()
         );
-    }
-    #[test]
-    fn counters_are_lossless_and_canonical() {
-        assert_eq!(parse_counter("18446744073709551615").unwrap(), u64::MAX);
-        for bad in ["", "01", "+1", "1.0", "18446744073709551616", "-1"] {
-            assert!(parse_counter(bad).is_err());
-        }
     }
 }

@@ -31,9 +31,7 @@ pub fn native_factory() -> Factory {
     Arc::new(|spec, budget| {
         #[cfg(windows)]
         {
-            if !cfg!(feature = "test-fixture") {
-                ensure_supported_platform()?;
-            }
+            ensure_supported_platform()?;
             windows::spawn(spec, budget)
         }
         #[cfg(not(windows))]

@@ -7,20 +7,25 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-version = "=0.1.7"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_System_Environment"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_IO", "Win32_System_LibraryLoader"] }
+
+[build-dependencies]
+serde_json.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3.23"
 
 [features]
-test-fixture = []
+test-fixture = ["dep:serde_json"]
 
 [[bin]]
 name = "pty-fixture"

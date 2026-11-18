@@ -7,9 +7,13 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("exit");
     match mode {
-        "linger" => loop {
-            std::thread::sleep(Duration::from_millis(100));
-        },
+        "linger" => {
+            println!("READY");
+            io::stdout().flush().unwrap();
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         "job-host" => run_job_host(&args[1]),
         "descendant" => {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -29,6 +33,8 @@ fn main() {
             child.wait().unwrap();
         }
         "flood" => {
+            println!("READY");
+            io::stdout().flush().unwrap();
             for i in 0..100_000 {
                 println!("{i:06} 中文 🌱 0123456789abcdefghijklmnopqrstuvwxyz");
             }
@@ -77,7 +83,6 @@ fn run_job_host(pid_file: &str) {
         args: vec!["descendant".into(), pid_file.into()],
         env: BTreeMap::new(),
         cwd: std::env::current_dir().unwrap(),
-        cwd_source: "explicit".into(),
         size: TerminalSize::default(),
     };
     let backend = native_factory()(spec, Arc::new(GlobalBudget::default())).unwrap();

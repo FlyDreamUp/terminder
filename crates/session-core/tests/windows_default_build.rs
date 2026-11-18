@@ -44,7 +44,6 @@ fn default_build_runs_a_real_windows_shell() {
         .into(),
         env: BTreeMap::new(),
         cwd: directory.path().to_path_buf(),
-        cwd_source: "explicit".into(),
         size: TerminalSize::default(),
     };
     let supervisor = Supervisor::new(native_factory(), 1).unwrap();

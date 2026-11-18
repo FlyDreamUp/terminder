@@ -83,7 +83,6 @@ fn spec() -> SpawnSpec {
         args: vec![],
         env: BTreeMap::new(),
         cwd: std::env::current_dir().unwrap(),
-        cwd_source: "explicit".into(),
         size: TerminalSize::default(),
     }
 }
@@ -316,7 +315,7 @@ fn reservations_cannot_be_used_by_another_session_or_after_close() {
 }
 
 #[test]
-fn lost_document_reclaims_prepared_running_and_finished_sessions() {
+fn failed_view_handles_reclaim_prepared_running_and_finished_sessions() {
     let reaped = Arc::new(AtomicUsize::new(0));
     let s = Supervisor::new(
         factory(
@@ -343,17 +342,14 @@ fn lost_document_reclaims_prepared_running_and_finished_sessions() {
             h.close();
             wait(&s, &h.binding, Phase::Finished);
         }
-        s.view_lost("main");
-        let deadline = Instant::now() + Duration::from_secs(4);
-        while !s.list("main").unwrap().is_empty() {
-            assert!(
-                Instant::now() < deadline,
-                "detached session metadata was retained"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
+        h.view_failed();
+        wait(&s, &h.binding, Phase::Finished);
+        s.forget("main", h.binding.clone()).unwrap();
+        assert!(s.list("main").unwrap().is_empty());
         assert_eq!(
-            s.close("main", &h.binding, false).unwrap_err().code,
+            s.input("main", h.binding, 1, b"stale".to_vec())
+                .unwrap_err()
+                .code,
             "session_missing"
         );
     }
@@ -446,4 +442,89 @@ fn losing_a_finished_view_releases_unacknowledged_output() {
         );
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn output_end_matches_delivered_bytes_and_precedes_finished() {
+    enum Record {
+        Output(Vec<u8>),
+        Event(SessionEvent),
+    }
+    #[derive(Default)]
+    struct Capture(Mutex<Vec<Record>>);
+    impl Sink for Capture {
+        fn output(&self, bytes: Vec<u8>) -> Result<()> {
+            self.0.lock().unwrap().push(Record::Output(bytes));
+            Ok(())
+        }
+        fn event(&self, event: SessionEvent) -> Result<()> {
+            self.0.lock().unwrap().push(Record::Event(event));
+            Ok(())
+        }
+    }
+    struct Fragmented(std::io::Cursor<Vec<u8>>);
+    impl std::io::Read for Fragmented {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let count = bytes.len().min(2);
+            self.0.read(&mut bytes[..count])
+        }
+    }
+    let expected = "中🌱".as_bytes();
+    let factory: Factory = Arc::new(move |_, budget| {
+        let io = Arc::new(IoState::default());
+        read_loop(
+            Fragmented(std::io::Cursor::new(expected.to_vec())),
+            io.clone(),
+            budget,
+        );
+        Ok(Box::new(Controlled {
+            io,
+            closed: false,
+            exited: Arc::new(AtomicBool::new(true)),
+            reaped: Arc::new(AtomicUsize::new(0)),
+        }))
+    });
+    let supervisor = Supervisor::new(factory, 1).unwrap();
+    let handle = supervisor.prepare("main", spec()).unwrap();
+    let capture = Arc::new(Capture::default());
+    supervisor
+        .start("main", handle.binding.clone(), spec().size, capture.clone())
+        .unwrap();
+    wait(&supervisor, &handle.binding, Phase::Finished);
+    let records = capture.0.lock().unwrap();
+    let mut output = Vec::new();
+    let (mut blocks, mut ends, mut finished) = (0, 0, 0);
+    for record in records.iter() {
+        match record {
+            Record::Output(bytes) => {
+                assert_eq!(ends, 0, "output after end barrier");
+                blocks += 1;
+                output.extend_from_slice(bytes);
+            }
+            Record::Event(SessionEvent::OutputEnd {
+                sequence,
+                bytes,
+                truncated,
+            }) => {
+                assert_eq!((*sequence, *bytes), (4, 7));
+                assert_eq!(*sequence, blocks);
+                assert_eq!(*bytes, output.len() as u64);
+                assert!(!truncated);
+                ends += 1;
+            }
+            Record::Event(SessionEvent::State { snapshot })
+                if snapshot.phase == Phase::Finished =>
+            {
+                assert_eq!(ends, 1, "Finished before the end barrier");
+                finished += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(output, expected);
+    assert_eq!((ends, finished), (1, 1));
+    supervisor
+        .ack("main", handle.binding.clone(), 4, 7)
+        .unwrap();
+    supervisor.forget("main", handle.binding).unwrap();
 }

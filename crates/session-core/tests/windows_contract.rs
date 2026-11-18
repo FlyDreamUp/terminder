@@ -8,8 +8,12 @@ use std::{
 use terminder_session_core::{
     backend::native_factory,
     model::*,
-    supervisor::{Sink, Supervisor},
+    supervisor::{SessionHandle, Sink, Supervisor},
 };
+
+// Process-wide handle counts require native tests to run exclusively, even with Cargo
+// default test parallelism. Each test still exercises concurrent PTY workers.
+static NATIVE_TEST: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct Capture {
@@ -38,7 +42,6 @@ fn spec(mode: &str) -> SpawnSpec {
         args: vec![mode.into()],
         env: BTreeMap::new(),
         cwd: std::env::current_dir().unwrap(),
-        cwd_source: "explicit".into(),
         size: TerminalSize {
             cols: 120,
             rows: 40,
@@ -71,7 +74,29 @@ fn wait(
         thread::sleep(Duration::from_millis(10));
     }
 }
-fn start(mode: &str) -> (Supervisor, Binding, Arc<Capture>) {
+fn ready(s: &Supervisor, b: &Binding, c: &Capture) {
+    wait(
+        s,
+        b,
+        c,
+        |snapshot| {
+            snapshot.phase == Phase::Running
+                && String::from_utf8_lossy(&c.bytes.lock().unwrap()).contains("READY")
+        },
+        true,
+    );
+}
+fn assert_closed(snapshot: &SessionSnapshot) {
+    assert_eq!(snapshot.phase, Phase::Finished);
+    assert_eq!(snapshot.reason, Some(FinishReason::ClosedByUser));
+    assert_eq!(
+        snapshot.exit_code,
+        Some(1),
+        "close must not become a loader failure: {snapshot:?}"
+    );
+    assert!(snapshot.cleanup_error.is_none(), "{snapshot:?}");
+}
+fn start(mode: &str) -> (Supervisor, SessionHandle, Arc<Capture>) {
     let s = Supervisor::new(native_factory(), 16).unwrap();
     let h = s.prepare("main", spec(mode)).unwrap();
     let c = Arc::new(Capture::default());
@@ -85,11 +110,13 @@ fn start(mode: &str) -> (Supervisor, Binding, Arc<Capture>) {
         c.clone(),
     )
     .unwrap();
-    (s, h.binding, c)
+    (s, h, c)
 }
 #[test]
 fn native_exit_preserves_tail_and_reports_exit_code() {
-    let (s, b, c) = start("exit");
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let (s, handle, c) = start("exit");
+    let b = handle.binding.clone();
     let end = wait(&s, &b, &c, |s| s.phase == Phase::Finished, true);
     assert_eq!(end.exit_code, Some(23));
     assert_eq!(end.reason, Some(FinishReason::Exited { code: 23 }));
@@ -100,20 +127,24 @@ fn native_exit_preserves_tail_and_reports_exit_code() {
 }
 #[test]
 fn close_unblocks_a_saturated_consumer_without_ack() {
-    let (s, b, c) = start("flood");
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let (s, handle, c) = start("flood");
+    let b = handle.binding.clone();
     wait(&s, &b, &c, |s| s.phase == Phase::Running, false);
     thread::sleep(Duration::from_millis(300));
     let start = Instant::now();
-    s.close("main", &b, false).unwrap();
+    handle.close();
     let end = wait(&s, &b, &c, |s| s.phase == Phase::Finished, false);
     assert!(start.elapsed() < Duration::from_secs(5));
-    assert_eq!(end.reason, Some(FinishReason::ClosedByUser));
+    assert_closed(&end);
     assert!(c.bytes.lock().unwrap().len() <= OUTPUT_WINDOW_BYTES);
 }
 #[test]
 fn real_input_resize_and_old_epoch_are_isolated() {
-    let (s, b, c) = start("echo");
-    wait(&s, &b, &c, |s| s.phase == Phase::Running, true);
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let (s, handle, c) = start("echo");
+    let b = handle.binding.clone();
+    ready(&s, &b, &c);
     s.resize("main", b.clone(), 1, TerminalSize { cols: 92, rows: 28 })
         .unwrap();
     let mut stale = b.clone();
@@ -128,6 +159,7 @@ fn real_input_resize_and_old_epoch_are_isolated() {
 }
 #[test]
 fn unicode_paths_empty_and_quoted_arguments_and_environment() {
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::Builder::new()
         .prefix("terminder 中文 ")
         .tempdir()
@@ -163,8 +195,10 @@ fn unicode_paths_empty_and_quoted_arguments_and_environment() {
 }
 #[test]
 fn job_owns_descendants_before_the_shell_runs() {
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
     use windows_sys::Win32::{Foundation::*, System::Threading::*};
-    let (s, b, c) = start("descendant");
+    let (s, handle, c) = start("descendant");
+    let b = handle.binding.clone();
     wait(&s, &b, &c, |s| s.phase == Phase::Running, true);
     let deadline = Instant::now() + Duration::from_secs(3);
     let pid = loop {
@@ -186,8 +220,9 @@ fn job_owns_descendants_before_the_shell_runs() {
         )
     };
     assert!(!process.is_null());
-    s.close("main", &b, false).unwrap();
-    wait(&s, &b, &c, |s| s.phase == Phase::Finished, true);
+    handle.close();
+    let end = wait(&s, &b, &c, |s| s.phase == Phase::Finished, true);
+    assert_closed(&end);
     assert_eq!(unsafe { WaitForSingleObject(process, 0) }, WAIT_OBJECT_0);
     unsafe {
         CloseHandle(process);
@@ -196,20 +231,24 @@ fn job_owns_descendants_before_the_shell_runs() {
 
 #[test]
 fn close_cancels_a_writer_when_the_program_never_reads_input() {
-    let (s, b, c) = start("linger");
-    wait(&s, &b, &c, |s| s.phase == Phase::Running, true);
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let (s, handle, c) = start("linger");
+    let b = handle.binding.clone();
+    ready(&s, &b, &c);
     for sequence in 1..=32 {
         s.input("main", b.clone(), sequence, vec![b'x'; INPUT_CHUNK])
             .unwrap();
     }
     let started = Instant::now();
-    s.close("main", &b, false).unwrap();
-    wait(&s, &b, &c, |s| s.phase == Phase::Finished, false);
+    handle.close();
+    let end = wait(&s, &b, &c, |s| s.phase == Phase::Finished, false);
+    assert_closed(&end);
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[test]
 fn abrupt_host_death_closes_the_job_and_kills_root_and_descendant() {
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
     use windows_sys::Win32::{Foundation::*, System::Threading::*};
     struct Host(std::process::Child);
     impl Drop for Host {
@@ -267,6 +306,7 @@ fn abrupt_host_death_closes_the_job_and_kills_root_and_descendant() {
 
 #[test]
 fn repeated_create_close_leaves_no_worker_growth() {
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
     use windows_sys::Win32::System::Threading::*;
     let before_types = handle_types();
     let mut before = 0;
@@ -274,11 +314,17 @@ fn repeated_create_close_leaves_no_worker_growth() {
         unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut before) },
         0
     );
-    for _ in 0..12 {
-        let (s, b, c) = start("echo");
-        wait(&s, &b, &c, |s| s.phase == Phase::Running, true);
-        s.close("main", &b, false).unwrap();
-        wait(&s, &b, &c, |s| s.phase == Phase::Finished, true);
+    for index in 0..24 {
+        let (s, handle, c) = start("echo");
+        let b = handle.binding.clone();
+        if index % 2 == 0 {
+            ready(&s, &b, &c);
+        } else {
+            wait(&s, &b, &c, |s| s.phase == Phase::Running, true);
+        }
+        handle.close();
+        let end = wait(&s, &b, &c, |s| s.phase == Phase::Finished, true);
+        assert_closed(&end);
         s.shutdown();
         while !s.is_stopped() {
             thread::sleep(Duration::from_millis(5));
@@ -295,6 +341,51 @@ fn repeated_create_close_leaves_no_worker_growth() {
         "handle growth {before} -> {after}: {before_types:?} -> {:?}",
         handle_types()
     );
+}
+
+#[test]
+fn cancelling_during_native_creation_reaps_the_late_backend() {
+    let _exclusive = NATIVE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    use std::sync::Barrier;
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let factory = {
+        let entered = entered.clone();
+        let release = release.clone();
+        let native = native_factory();
+        Arc::new(move |spec, budget| {
+            entered.wait();
+            release.wait();
+            native(spec, budget)
+        })
+    };
+    let s = Supervisor::new(factory, 1).unwrap();
+    let h = s.prepare("main", spec("echo")).unwrap();
+    let c = Arc::new(Capture::default());
+    s.start(
+        "main",
+        h.binding.clone(),
+        TerminalSize::default(),
+        c.clone(),
+    )
+    .unwrap();
+    entered.wait();
+    h.close();
+    wait(&s, &h.binding, &c, |s| s.phase == Phase::Finalizing, true);
+    release.wait();
+    let end = wait(&s, &h.binding, &c, |s| s.phase == Phase::Finished, true);
+    assert_closed(&end);
+    assert!(
+        !c.events.lock().unwrap().iter().any(
+            |e| matches!(e, SessionEvent::State{snapshot} if snapshot.phase == Phase::Running)
+        )
+    );
+    s.shutdown();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !s.join_if_stopped().unwrap() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(2));
+    }
 }
 
 fn handle_types() -> BTreeMap<String, usize> {
